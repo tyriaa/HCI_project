@@ -47,8 +47,58 @@ gaze_state = {
     'fingers_extended': {'left': [], 'right': []},
     'hand_gesture': 'none',
     'suspicious_behaviors': [],
-    'behavior_flags': 0
+    'behavior_flags': 0,
+    'eye_openness_left': 100,
+    'eye_openness_right': 100,
+    'eye_openness_avg': 100,
+    'is_blinking': False,
+    'blink_count': 0,
+    'iris_position': {'left': {'h': 0, 'v': 0}, 'right': {'h': 0, 'v': 0}},
+    'head_roll': 0,
+    # Full-face attention monitoring
+    'attention_score': 100,
+    'attention_status': 'attentive',
+    'facing_score': 100,
+    'occlusion_detected': False,
+    'mouth_activity': 0
 }
+
+def reset_all_counters():
+    """Reset all counters to 0 at app start."""
+    global gaze_state, calibration_samples, pose_history, last_good_pose
+    global landmark_history, mouth_history, distraction_start_time, attention_state
+    
+    gaze_state['flags'] = []
+    gaze_state['total_flags'] = 0
+    gaze_state['looking_away_duration'] = 0
+    gaze_state['phone_flags'] = 0
+    gaze_state['tab_switches'] = 0
+    gaze_state['window_blurs'] = 0
+    gaze_state['tab_switch_flags'] = 0
+    gaze_state['hand_flags'] = 0
+    gaze_state['behavior_flags'] = 0
+    gaze_state['blink_count'] = 0
+    gaze_state['calibrated'] = False
+    gaze_state['pitch_offset'] = 0
+    
+    # Reset attention monitoring
+    gaze_state['attention_score'] = 100
+    gaze_state['attention_status'] = 'attentive'
+    gaze_state['facing_score'] = 100
+    gaze_state['occlusion_detected'] = False
+    gaze_state['mouth_activity'] = 0
+    
+    calibration_samples = []
+    # Reset pose smoothing history
+    pose_history = {'yaw': [], 'pitch': [], 'roll': []}
+    last_good_pose = {'yaw': 0, 'pitch': 0, 'roll': 0}
+    
+    # Reset attention tracking history
+    landmark_history = []
+    mouth_history = []
+    distraction_start_time = None
+    
+    print("✅ All counters reset to 0")
 
 # Configuration
 LOOKING_AWAY_THRESHOLD = 2.0  # seconds before flagging
@@ -139,29 +189,70 @@ def init_models():
     return True
 
 
-def detect_phone(frame):
-    """Detect cell phone in frame using YOLO."""
+def detect_objects(frame):
+    """
+    Detect potentially suspicious held objects using YOLO.
+    Returns phone detection status and any other held objects.
+    
+    YOLO COCO classes for suspicious objects:
+    - 67: cell phone
+    - 63: laptop
+    - 64: mouse
+    - 65: remote
+    - 66: keyboard
+    - 73: book
+    - 74: clock
+    - 39: bottle
+    - 41: cup
+    - 76: scissors
+    """
     if yolo_model is None:
-        return False, None
+        return False, None, []
     
     phone_detected = False
     phone_box = None
+    other_objects = []
+    
+    # Object classes that could be suspicious if held
+    SUSPICIOUS_OBJECT_IDS = {
+        67: 'cell phone',
+        63: 'laptop', 
+        64: 'mouse',
+        65: 'remote',
+        73: 'book',
+        74: 'clock',
+        76: 'scissors',
+        39: 'bottle',
+        41: 'cup',
+        84: 'book',
+    }
     
     # Run YOLO detection
     results = yolo_model(frame, verbose=False, conf=PHONE_CONFIDENCE_THRESHOLD)
     
     for result in results:
         for box in result.boxes:
+            class_id = int(box.cls[0])
+            
             # Check if detected object is a cell phone
-            if int(box.cls[0]) == PHONE_CLASS_ID:
+            if class_id == PHONE_CLASS_ID:
                 phone_detected = True
-                # Get bounding box coordinates
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 conf = float(box.conf[0])
                 phone_box = (x1, y1, x2, y2, conf)
-                break
+            
+            # Check for other suspicious objects
+            elif class_id in SUSPICIOUS_OBJECT_IDS:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                conf = float(box.conf[0])
+                obj_name = SUSPICIOUS_OBJECT_IDS[class_id]
+                other_objects.append({
+                    'name': obj_name,
+                    'box': (x1, y1, x2, y2),
+                    'confidence': conf
+                })
     
-    return phone_detected, phone_box
+    return phone_detected, phone_box, other_objects
 
 
 def analyze_finger_state(hand_landmarks):
@@ -259,11 +350,8 @@ def detect_hands_holding_object(hand_result, phone_box, face_detected=False, fra
         # Store landmarks for visualization
         all_landmarks.append(hand_landmarks)
         
-        # Detection Method 1: Closed fist or gripping gesture
-        if gesture in ['closed_fist', 'gripping']:
-            holding_object = True
-        
-        # Detection Method 2: Hand near detected phone
+        # ONLY detect holding object if YOLO detected a phone nearby
+        # A closed fist alone should NOT trigger "holding object"
         if phone_box:
             h, w = frame_shape[:2]
             px1, py1, px2, py2, _ = phone_box
@@ -367,187 +455,866 @@ def detect_suspicious_behaviors(hand_details, face_landmarks, frame_shape):
     return behaviors
 
 
-# MediaPipe landmark indices for eyes
+# MediaPipe landmark indices for eyes - comprehensive mapping
+# Eye contour landmarks for stable eye region detection
 LEFT_EYE_INDICES = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
-LEFT_IRIS_INDICES = [468, 469, 470, 471, 472]
-RIGHT_IRIS_INDICES = [473, 474, 475, 476, 477]
+
+# Iris landmarks (center + 4 points around iris)
+LEFT_IRIS_INDICES = [468, 469, 470, 471, 472]  # 468 = center
+RIGHT_IRIS_INDICES = [473, 474, 475, 476, 477]  # 473 = center
+
+# Eye landmarks for blink/openness detection (upper and lower eyelid)
+LEFT_EYE_UPPER = [159, 145]  # Upper eyelid points
+LEFT_EYE_LOWER = [23, 27]    # Lower eyelid points  
+RIGHT_EYE_UPPER = [386, 374]  # Upper eyelid points
+RIGHT_EYE_LOWER = [253, 257]  # Lower eyelid points
+
+# More precise eye landmarks for EAR (Eye Aspect Ratio) calculation
+LEFT_EYE_EAR = [33, 160, 158, 133, 153, 144]  # P1-P6 for left eye
+RIGHT_EYE_EAR = [362, 385, 387, 263, 373, 380]  # P1-P6 for right eye
+
+# Vertical eye landmarks for precise openness
+LEFT_EYE_TOP = 159
+LEFT_EYE_BOTTOM = 145
+RIGHT_EYE_TOP = 386
+RIGHT_EYE_BOTTOM = 374
+
+# Use MediaPipe's built-in FACEMESH_FACE_OVAL for proper face contour
+# This is a frozenset of (i, j) connection pairs
+try:
+    FACEMESH_FACE_OVAL = mp.solutions.face_mesh.FACEMESH_FACE_OVAL
+except AttributeError:
+    # Fallback if not available - manual face oval connections
+    FACEMESH_FACE_OVAL = frozenset([
+        (10, 338), (338, 297), (297, 332), (332, 284), (284, 251), (251, 389),
+        (389, 356), (356, 454), (454, 323), (323, 361), (361, 288), (288, 397),
+        (397, 365), (365, 379), (379, 378), (378, 400), (400, 377), (377, 152),
+        (152, 148), (148, 176), (176, 149), (149, 150), (150, 136), (136, 172),
+        (172, 58), (58, 132), (132, 93), (93, 234), (234, 127), (127, 162),
+        (162, 21), (21, 54), (54, 103), (103, 67), (67, 109), (109, 10)
+    ])
+
+# Extract unique indices from face oval connections
+FACE_OVAL_INDICES = sorted({idx for conn in FACEMESH_FACE_OVAL for idx in conn})
+
+# Blink detection thresholds
+EYE_AR_THRESH = 0.2  # Eye aspect ratio threshold for blink
+EYE_AR_CONSEC_FRAMES = 2  # Consecutive frames for blink confirmation
+BLINK_COUNTER = 0
+TOTAL_BLINKS = 0
 
 
-def get_eye_region(landmarks, eye_indices, img_shape):
-    """Extract eye region coordinates from MediaPipe landmarks."""
+def calculate_eye_aspect_ratio(landmarks, eye_indices, img_shape):
+    """
+    Calculate Eye Aspect Ratio (EAR) for blink detection.
+    EAR = (|p2-p6| + |p3-p5|) / (2 * |p1-p4|)
+    Where p1-p6 are the 6 eye landmarks.
+    """
     h, w = img_shape[:2]
-    pts = np.array([[int(landmarks[i].x * w), int(landmarks[i].y * h)] for i in eye_indices])
-    return pts
+    
+    # Get eye landmark coordinates
+    pts = [(landmarks[i].x * w, landmarks[i].y * h) for i in eye_indices]
+    
+    # Calculate distances
+    # Vertical distances
+    v1 = np.sqrt((pts[1][0] - pts[5][0])**2 + (pts[1][1] - pts[5][1])**2)
+    v2 = np.sqrt((pts[2][0] - pts[4][0])**2 + (pts[2][1] - pts[4][1])**2)
+    
+    # Horizontal distance
+    h_dist = np.sqrt((pts[0][0] - pts[3][0])**2 + (pts[0][1] - pts[3][1])**2)
+    
+    if h_dist == 0:
+        return 0.3  # Default open eye value
+    
+    ear = (v1 + v2) / (2.0 * h_dist)
+    return ear
 
 
-def get_gaze_ratio(eye_indices, iris_indices, gray, landmarks, img_shape):
-    """Calculate gaze ratio using MediaPipe iris landmarks with horizontal and vertical tracking."""
+def calculate_eye_openness(landmarks, img_shape):
+    """
+    Calculate eye openness percentage for both eyes.
+    Returns tuple of (left_openness, right_openness, avg_openness, is_blinking)
+    """
     h, w = img_shape[:2]
     
-    # Get eye region
-    eye_region = get_eye_region(landmarks, eye_indices, img_shape)
+    # Get vertical eye distances
+    left_top = landmarks[LEFT_EYE_TOP]
+    left_bottom = landmarks[LEFT_EYE_BOTTOM]
+    right_top = landmarks[RIGHT_EYE_TOP]
+    right_bottom = landmarks[RIGHT_EYE_BOTTOM]
     
-    # Get bounding box
-    min_x = np.min(eye_region[:, 0])
-    max_x = np.max(eye_region[:, 0])
-    min_y = np.min(eye_region[:, 1])
-    max_y = np.max(eye_region[:, 1])
+    # Calculate vertical distances (in pixels)
+    left_height = abs(left_bottom.y - left_top.y) * h
+    right_height = abs(right_bottom.y - right_top.y) * h
     
-    # Add padding
-    padding = 5
-    min_x = max(0, min_x - padding)
-    max_x = min(w, max_x + padding)
-    min_y = max(0, min_y - padding)
-    max_y = min(h, max_y + padding)
+    # Get horizontal eye width for normalization
+    left_width = abs(landmarks[33].x - landmarks[133].x) * w
+    right_width = abs(landmarks[362].x - landmarks[263].x) * w
     
-    eye = gray[min_y:max_y, min_x:max_x]
+    # Calculate openness ratio (height/width)
+    left_openness = left_height / max(left_width, 1) if left_width > 0 else 0
+    right_openness = right_height / max(right_width, 1) if right_width > 0 else 0
     
-    if eye.size == 0:
-        return (1.0, 0.0), "unknown"
+    avg_openness = (left_openness + right_openness) / 2
     
-    # Get iris center (both x and y)
-    iris_x = int(landmarks[iris_indices[0]].x * w)
-    iris_y = int(landmarks[iris_indices[0]].y * h)
+    # Normalize to 0-100% (typical open eye ratio is ~0.25-0.35)
+    left_pct = min(100, max(0, (left_openness / 0.35) * 100))
+    right_pct = min(100, max(0, (right_openness / 0.35) * 100))
+    avg_pct = (left_pct + right_pct) / 2
     
-    eye_center_x = (min_x + max_x) // 2
-    eye_center_y = (min_y + max_y) // 2
+    # Detect blink (both eyes closed)
+    is_blinking = avg_openness < 0.15
     
-    eye_width = max_x - min_x
-    eye_height = max_y - min_y
+    return left_pct, right_pct, avg_pct, is_blinking
+
+
+def get_iris_position(landmarks, img_shape):
+    """
+    Get precise iris position relative to eye corners.
+    Returns normalized position (-1 to 1) for both horizontal and vertical.
+    """
+    h, w = img_shape[:2]
     
-    if eye_width == 0 or eye_height == 0:
-        return (1.0, 0.0), "center"
+    # Left eye iris
+    left_iris_center = landmarks[468]
+    left_eye_inner = landmarks[133]
+    left_eye_outer = landmarks[33]
     
-    # Calculate relative position
-    # Horizontal: -1 = far left, 0 = center, 1 = far right
-    # Vertical: positive = looking down (iris moves down in image), negative = looking up (iris moves up in image)
-    horizontal_pos = (iris_x - eye_center_x) / (eye_width / 2)
-    vertical_pos = (iris_y - eye_center_y) / (eye_height / 2)
+    # Right eye iris
+    right_iris_center = landmarks[473]
+    right_eye_inner = landmarks[362]
+    right_eye_outer = landmarks[263]
     
-    # Determine direction with tighter thresholds
-    h_threshold = 0.12
-    v_threshold = 0.15
+    # Calculate left eye iris position
+    left_eye_width = abs(left_eye_outer.x - left_eye_inner.x)
+    left_eye_center_x = (left_eye_outer.x + left_eye_inner.x) / 2
+    left_iris_h = (left_iris_center.x - left_eye_center_x) / (left_eye_width / 2) if left_eye_width > 0 else 0
     
-    if abs(vertical_pos) > v_threshold:
-        if vertical_pos > v_threshold:
-            direction = "down"  # Positive vertical_pos = iris moved down = looking down
-        else:
-            direction = "up"  # Negative vertical_pos = iris moved up = looking up
-    elif abs(horizontal_pos) > h_threshold:
-        if horizontal_pos < -h_threshold:
-            direction = "left"
-        else:
-            direction = "right"
+    # Vertical position for left eye
+    left_eye_top = landmarks[LEFT_EYE_TOP]
+    left_eye_bottom = landmarks[LEFT_EYE_BOTTOM]
+    left_eye_height = abs(left_eye_bottom.y - left_eye_top.y)
+    left_eye_center_y = (left_eye_top.y + left_eye_bottom.y) / 2
+    left_iris_v = (left_iris_center.y - left_eye_center_y) / (left_eye_height / 2) if left_eye_height > 0 else 0
+    
+    # Calculate right eye iris position
+    right_eye_width = abs(right_eye_inner.x - right_eye_outer.x)
+    right_eye_center_x = (right_eye_outer.x + right_eye_inner.x) / 2
+    right_iris_h = (right_iris_center.x - right_eye_center_x) / (right_eye_width / 2) if right_eye_width > 0 else 0
+    
+    # Vertical position for right eye
+    right_eye_top = landmarks[RIGHT_EYE_TOP]
+    right_eye_bottom = landmarks[RIGHT_EYE_BOTTOM]
+    right_eye_height = abs(right_eye_bottom.y - right_eye_top.y)
+    right_eye_center_y = (right_eye_top.y + right_eye_bottom.y) / 2
+    right_iris_v = (right_iris_center.y - right_eye_center_y) / (right_eye_height / 2) if right_eye_height > 0 else 0
+    
+    return {
+        'left': {'horizontal': left_iris_h, 'vertical': left_iris_v},
+        'right': {'horizontal': right_iris_h, 'vertical': right_iris_v},
+        'avg_horizontal': (left_iris_h + right_iris_h) / 2,
+        'avg_vertical': (left_iris_v + right_iris_v) / 2
+    }
+
+
+def get_gaze_direction(landmarks, img_shape, head_yaw=0, head_pitch=0):
+    """
+    Detect gaze direction using MediaPipe face landmarks.
+    Combines head pose with iris position for accurate detection.
+    
+    All directions are from the HUMAN's perspective (not camera).
+    The video feed is mirrored like a mirror.
+    
+    Args:
+        landmarks: MediaPipe face landmarks
+        img_shape: frame shape (h, w, c)
+        head_yaw: head yaw angle from get_head_pose
+        head_pitch: head pitch angle from get_head_pose
+    
+    Returns:
+        dict with direction info
+    """
+    h, w = img_shape[:2]
+    
+    # === GET NOSE TIP AS FACE CENTER REFERENCE ===
+    nose_tip = landmarks[1]
+    
+    # === GET FACE BOUNDING LANDMARKS ===
+    # Left side of face (from camera view)
+    left_face = landmarks[234]   # Left cheek
+    # Right side of face (from camera view)  
+    right_face = landmarks[454]  # Right cheek
+    # Top of face
+    forehead = landmarks[10]
+    # Bottom of face
+    chin = landmarks[152]
+    
+    # Calculate face center
+    face_center_x = (left_face.x + right_face.x) / 2
+    face_center_y = (forehead.y + chin.y) / 2
+    face_width = abs(right_face.x - left_face.x)
+    face_height = abs(chin.y - forehead.y)
+    
+    # === IRIS TRACKING ===
+    # Left eye iris (landmarks 468-472, center is 468)
+    left_iris = landmarks[468]
+    # Right eye iris (landmarks 473-477, center is 473)
+    right_iris = landmarks[473]
+    
+    # Left eye corners
+    left_eye_inner = landmarks[133]
+    left_eye_outer = landmarks[33]
+    # Right eye corners
+    right_eye_inner = landmarks[362]
+    right_eye_outer = landmarks[263]
+    
+    # Calculate iris position relative to eye corners
+    # For left eye
+    left_eye_width = left_eye_inner.x - left_eye_outer.x
+    if left_eye_width > 0:
+        left_iris_ratio = (left_iris.x - left_eye_outer.x) / left_eye_width
     else:
-        direction = "center"
+        left_iris_ratio = 0.5
     
-    return (horizontal_pos, vertical_pos), direction
+    # For right eye
+    right_eye_width = right_eye_outer.x - right_eye_inner.x
+    if right_eye_width > 0:
+        right_iris_ratio = (right_iris.x - right_eye_inner.x) / right_eye_width
+    else:
+        right_iris_ratio = 0.5
+    
+    # Average iris position (0 = looking left, 0.5 = center, 1 = looking right)
+    avg_iris_h = (left_iris_ratio + right_iris_ratio) / 2
+    
+    # Vertical iris tracking
+    left_eye_top = landmarks[159]
+    left_eye_bottom = landmarks[145]
+    right_eye_top = landmarks[386]
+    right_eye_bottom = landmarks[374]
+    
+    left_eye_height = left_eye_bottom.y - left_eye_top.y
+    right_eye_height = right_eye_bottom.y - right_eye_top.y
+    
+    if left_eye_height > 0:
+        left_iris_v = (left_iris.y - left_eye_top.y) / left_eye_height
+    else:
+        left_iris_v = 0.5
+        
+    if right_eye_height > 0:
+        right_iris_v = (right_iris.y - right_eye_top.y) / right_eye_height
+    else:
+        right_iris_v = 0.5
+    
+    avg_iris_v = (left_iris_v + right_iris_v) / 2
+    
+    # === DETERMINE DIRECTION ===
+    # Use head pose classification (primary, more reliable)
+    head_direction = classify_head_direction(head_yaw, head_pitch)
+    
+    direction = "center"
+    source = ""
+    
+    # Priority 1: Head pose (more reliable for large movements)
+    if head_direction != "center":
+        direction = head_direction
+        source = "head"
+    else:
+        # Priority 2: Iris position (for subtle eye movements when head is centered)
+        IRIS_H_THRESHOLD = 0.12      # deviation from center (0.5)
+        IRIS_V_THRESHOLD = 0.12      # deviation from center (0.5)
+        
+        iris_h_offset = avg_iris_h - 0.5  # Positive = iris moved right in image
+        iris_v_offset = avg_iris_v - 0.5  # Positive = iris moved down
+        
+        # In mirrored video: iris moving right in image = user looking to THEIR left
+        if iris_h_offset > IRIS_H_THRESHOLD:
+            direction = "left"
+            source = "eyes"
+        elif iris_h_offset < -IRIS_H_THRESHOLD:
+            direction = "right"
+            source = "eyes"
+        elif iris_v_offset > IRIS_V_THRESHOLD:
+            direction = "down"
+            source = "eyes"
+        elif iris_v_offset < -IRIS_V_THRESHOLD:
+            direction = "up"
+            source = "eyes"
+    
+    return {
+        'direction': direction,
+        'source': source,
+        'iris_h': avg_iris_h,
+        'iris_v': avg_iris_v,
+        'head_yaw': head_yaw,
+        'head_pitch': head_pitch,
+        'is_center': direction == "center"
+    }
+
+
+# ============================================================
+# HEAD POSE ESTIMATION WITH SMOOTHING
+# ============================================================
+
+# Smoothing buffers for head pose (EMA / moving average)
+pose_history = {
+    'yaw': [],
+    'pitch': [],
+    'roll': []
+}
+POSE_SMOOTHING_FRAMES = 10  # Number of frames for moving average
+EMA_ALPHA = 0.3  # Exponential moving average alpha (0.1-0.5, lower = smoother)
+
+# Last known good pose (for bad frame rejection)
+last_good_pose = {'yaw': 0, 'pitch': 0, 'roll': 0}
+
+# 6-point landmark indices for head pose (standard set)
+POSE_LANDMARK_INDICES = [
+    1,    # Nose tip
+    152,  # Chin
+    33,   # Left eye outer corner
+    263,  # Right eye outer corner
+    61,   # Left mouth corner
+    291,  # Right mouth corner
+]
+
+# Canonical 3D face model coordinates (in mm)
+# These are approximate but PnP is tolerant
+FACE_3D_MODEL = np.array([
+    (0.0, 0.0, 0.0),           # Nose tip
+    (0.0, -63.6, -12.5),       # Chin
+    (-43.3, 32.7, -26.0),      # Left eye outer corner
+    (43.3, 32.7, -26.0),       # Right eye outer corner
+    (-28.9, -28.9, -24.1),     # Left mouth corner
+    (28.9, -28.9, -24.1),      # Right mouth corner
+], dtype=np.float64)
+
+
+def smooth_angle(angle, history_key, use_ema=True):
+    """
+    Apply smoothing to angle using EMA or moving average.
+    
+    Args:
+        angle: Current angle value
+        history_key: Key in pose_history dict ('yaw', 'pitch', 'roll')
+        use_ema: If True, use exponential moving average; else use simple moving average
+    
+    Returns:
+        Smoothed angle value
+    """
+    global pose_history
+    
+    # Add to history
+    pose_history[history_key].append(angle)
+    
+    # Keep only last N frames
+    if len(pose_history[history_key]) > POSE_SMOOTHING_FRAMES:
+        pose_history[history_key] = pose_history[history_key][-POSE_SMOOTHING_FRAMES:]
+    
+    if use_ema:
+        # Exponential Moving Average
+        if len(pose_history[history_key]) == 1:
+            return angle
+        
+        smoothed = pose_history[history_key][0]
+        for val in pose_history[history_key][1:]:
+            smoothed = EMA_ALPHA * val + (1 - EMA_ALPHA) * smoothed
+        return smoothed
+    else:
+        # Simple Moving Average
+        return np.mean(pose_history[history_key])
 
 
 def get_head_pose(landmarks, img_shape):
-    """Estimate head pose using MediaPipe landmarks."""
+    """
+    Estimate head pose using 6-point PnP method with smoothing.
+    
+    A) Get 2D landmarks from MediaPipe Face Mesh (6 points)
+    B) Map to canonical 3D face model
+    C) Solve PnP → rotation → yaw/pitch/roll
+    D) Smooth angles with EMA
+    
+    Returns:
+        pitch, yaw, roll in degrees (smoothed)
+    """
+    global last_good_pose
+    
     h, w = img_shape[:2]
     
-    # MediaPipe face landmark indices
-    # 1: Nose tip, 152: Chin, 33: Left eye, 263: Right eye, 61: Left mouth, 291: Right mouth
+    # A) Extract 2D landmark points
     image_points = np.array([
-        (landmarks[1].x * w, landmarks[1].y * h),      # Nose tip
-        (landmarks[152].x * w, landmarks[152].y * h),  # Chin
-        (landmarks[33].x * w, landmarks[33].y * h),    # Left eye left corner
-        (landmarks[263].x * w, landmarks[263].y * h),  # Right eye right corner
-        (landmarks[61].x * w, landmarks[61].y * h),    # Left mouth corner
-        (landmarks[291].x * w, landmarks[291].y * h)   # Right mouth corner
-    ], dtype="double")
+        (landmarks[idx].x * w, landmarks[idx].y * h) 
+        for idx in POSE_LANDMARK_INDICES
+    ], dtype=np.float64)
     
-    # 3D model points
-    model_points = np.array([
-        (0.0, 0.0, 0.0),             # Nose tip
-        (0.0, -330.0, -65.0),        # Chin
-        (-225.0, 170.0, -135.0),     # Left eye left corner
-        (225.0, 170.0, -135.0),      # Right eye right corner
-        (-150.0, -150.0, -125.0),    # Left mouth corner
-        (150.0, -150.0, -125.0)      # Right mouth corner
-    ])
+    # Check for bad frame (landmarks out of bounds or invalid)
+    for pt in image_points:
+        if pt[0] < 0 or pt[0] > w or pt[1] < 0 or pt[1] > h:
+            # Bad frame - return last good pose
+            return last_good_pose['pitch'], last_good_pose['yaw'], last_good_pose['roll']
     
-    # Camera internals
+    # B) 3D model points (already defined as FACE_3D_MODEL)
+    
+    # C) Camera intrinsic parameters
+    # Focal length ≈ image width (standard approximation)
     focal_length = w
     center = (w / 2, h / 2)
+    
     camera_matrix = np.array([
         [focal_length, 0, center[0]],
         [0, focal_length, center[1]],
         [0, 0, 1]
-    ], dtype="double")
+    ], dtype=np.float64)
     
-    dist_coeffs = np.zeros((4, 1))
+    dist_coeffs = np.zeros((4, 1), dtype=np.float64)
     
+    # Solve PnP
     success, rotation_vector, translation_vector = cv2.solvePnP(
-        model_points, image_points, camera_matrix, dist_coeffs,
+        FACE_3D_MODEL, 
+        image_points, 
+        camera_matrix, 
+        dist_coeffs,
         flags=cv2.SOLVEPNP_ITERATIVE
     )
+    
+    if not success:
+        return last_good_pose['pitch'], last_good_pose['yaw'], last_good_pose['roll']
     
     # Convert rotation vector to rotation matrix
     rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
     
-    # Get Euler angles
-    proj_matrix = np.hstack((rotation_matrix, translation_vector))
-    _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(proj_matrix)
+    # Get Euler angles using RQDecomp3x3
+    # This gives more stable results than decomposeProjectionMatrix
+    angles, _, _, _, _, _ = cv2.RQDecomp3x3(rotation_matrix)
     
-    pitch = euler_angles[0][0]
-    yaw = euler_angles[1][0]
-    roll = euler_angles[2][0]
+    pitch = angles[0]  # X-axis rotation (nodding)
+    yaw = angles[1]    # Y-axis rotation (shaking head left/right)
+    roll = angles[2]   # Z-axis rotation (tilting head)
+    
+    # D) Apply smoothing
+    pitch = smooth_angle(pitch, 'pitch')
+    yaw = smooth_angle(yaw, 'yaw')
+    roll = smooth_angle(roll, 'roll')
+    
+    # Update last good pose
+    last_good_pose['pitch'] = pitch
+    last_good_pose['yaw'] = yaw
+    last_good_pose['roll'] = roll
     
     return pitch, yaw, roll
 
 
-def is_looking_at_screen(left_gaze, right_gaze, left_dir, right_dir, pitch, yaw, pitch_offset=0):
-    """Determine if user is looking at the screen with improved directional detection."""
-    # Apply calibration offset to pitch
-    adjusted_pitch = pitch - pitch_offset
+def classify_head_direction(yaw, pitch):
+    """
+    Classify head direction based on yaw and pitch angles.
     
-    # Adjusted thresholds for better accuracy
-    YAW_THRESHOLD = 25  # Head turn left/right
-    PITCH_UP_THRESHOLD = 30  # Looking up (more lenient for top of screen)
-    PITCH_DOWN_THRESHOLD = 25  # Looking down
+    Thresholds (from user's perspective, mirrored video):
+    - yaw > +15° → looking left (user's left)
+    - yaw < -15° → looking right (user's right)
+    - pitch > +10° → looking down
+    - pitch < -10° → looking up
+    - else → forward/center
     
-    # Extract horizontal and vertical gaze positions
-    left_h, left_v = left_gaze
-    right_h, right_v = right_gaze
-    avg_h = (left_h + right_h) / 2
-    avg_v = (left_v + right_v) / 2
+    Returns:
+        direction: str ('left', 'right', 'up', 'down', 'center')
+    """
+    YAW_THRESHOLD = 15.0
+    PITCH_THRESHOLD = 10.0
     
-    # Priority 1: Check head pose (most reliable for large movements)
-    if abs(yaw) > YAW_THRESHOLD:
-        if yaw > 0:
-            return False, "👉 Head turned right"
-        else:
-            return False, "👈 Head turned left"
+    # Check yaw first (horizontal movement is more common)
+    if yaw > YAW_THRESHOLD:
+        return "left"
+    elif yaw < -YAW_THRESHOLD:
+        return "right"
+    # Then check pitch
+    elif pitch > PITCH_THRESHOLD:
+        return "down"
+    elif pitch < -PITCH_THRESHOLD:
+        return "up"
+    else:
+        return "center"
+
+
+# ============================================================
+# FULL-FACE ATTENTION MONITORING SYSTEM
+# ============================================================
+
+# Attention state tracking
+attention_state = {
+    'facing_score': 100,           # 0-100, how directly facing camera
+    'symmetry_score': 100,         # 0-100, face symmetry
+    'occlusion_detected': False,   # eyes/face blocked
+    'occlusion_regions': [],       # which regions are occluded
+    'mouth_open_ratio': 0,         # 0-1, mouth openness
+    'mouth_activity': 0,           # 0-100, lip movement intensity
+    'landmark_confidence': 100,    # 0-100, landmark stability
+    'attention_score': 100,        # 0-100, overall attention
+    'attention_status': 'attentive',  # attentive, distracted, away, occluded
+    'distraction_duration': 0,     # seconds of continuous distraction
+}
+
+# Duration tracking for attention decisions
+distraction_start_time = None
+DISTRACTION_THRESHOLD_SECONDS = 2.0  # Flag after 2 seconds of distraction
+
+# Landmark jitter tracking for occlusion detection
+landmark_history = []
+JITTER_HISTORY_FRAMES = 5
+
+# Mouth activity tracking
+mouth_history = []
+MOUTH_HISTORY_FRAMES = 10
+
+
+def calculate_facing_score(landmarks, img_shape):
+    """
+    Calculate how directly the face is facing the camera (0-100).
+    Uses multiple signals:
+    1. Face symmetry (left vs right landmark distances)
+    2. Nose-to-face-center offset
+    3. Eye visibility balance
     
-    if adjusted_pitch > PITCH_DOWN_THRESHOLD:
-        return False, "👇 Head looking down"
-    elif adjusted_pitch < -PITCH_UP_THRESHOLD:
-        return False, "👆 Head looking up"
+    Returns:
+        facing_score: 0-100 (100 = directly facing)
+    """
+    h, w = img_shape[:2]
     
-    # Priority 2: Check eye gaze for subtle movements
-    # Vertical eye movement (positive = down, negative = up)
-    if avg_v > 0.2:
-        return False, "👇 Eyes looking down"
-    elif avg_v < -0.2:
-        return False, "👆 Eyes looking up"
+    # Get key landmarks
+    nose_tip = landmarks[1]
+    left_cheek = landmarks[234]
+    right_cheek = landmarks[454]
+    left_eye_outer = landmarks[33]
+    right_eye_outer = landmarks[263]
+    chin = landmarks[152]
+    forehead = landmarks[10]
     
-    # Horizontal eye movement
-    if left_dir == "left" and right_dir == "left":
-        return False, "👈 Eyes looking left"
-    elif left_dir == "right" and right_dir == "right":
-        return False, "👉 Eyes looking right"
+    # 1. Calculate face center
+    face_center_x = (left_cheek.x + right_cheek.x) / 2
+    face_center_y = (forehead.y + chin.y) / 2
     
-    # Combined check: if eyes and head slightly disagree
-    if avg_h < -0.15:
-        return False, "👈 Looking left"
-    elif avg_h > 0.15:
-        return False, "👉 Looking right"
+    # 2. Nose offset from face center (should be ~0 when facing camera)
+    nose_offset_x = abs(nose_tip.x - face_center_x)
+    nose_offset_score = max(0, 100 - nose_offset_x * 500)  # Penalize offset
     
-    return True, "✅ Looking at screen"
+    # 3. Face symmetry - compare left and right distances
+    left_dist = abs(nose_tip.x - left_cheek.x)
+    right_dist = abs(nose_tip.x - right_cheek.x)
+    
+    if max(left_dist, right_dist) > 0:
+        symmetry_ratio = min(left_dist, right_dist) / max(left_dist, right_dist)
+    else:
+        symmetry_ratio = 1.0
+    symmetry_score = symmetry_ratio * 100
+    
+    # 4. Eye balance - both eyes should be similarly visible
+    left_eye_width = abs(landmarks[133].x - landmarks[33].x)
+    right_eye_width = abs(landmarks[263].x - landmarks[362].x)
+    
+    if max(left_eye_width, right_eye_width) > 0:
+        eye_ratio = min(left_eye_width, right_eye_width) / max(left_eye_width, right_eye_width)
+    else:
+        eye_ratio = 1.0
+    eye_balance_score = eye_ratio * 100
+    
+    # Combine scores (weighted average)
+    facing_score = (nose_offset_score * 0.4 + symmetry_score * 0.4 + eye_balance_score * 0.2)
+    
+    return min(100, max(0, facing_score))
+
+
+def detect_occlusion(landmarks, img_shape, hand_landmarks_list=None):
+    """
+    Detect if face regions are occluded (hands, hair, objects).
+    
+    Checks:
+    1. Landmark confidence/jitter (sudden changes indicate occlusion)
+    2. Hand proximity to face regions
+    3. Eye region visibility
+    
+    Returns:
+        is_occluded: bool
+        occluded_regions: list of region names
+        confidence: 0-100
+    """
+    global landmark_history
+    
+    h, w = img_shape[:2]
+    occluded_regions = []
+    confidence = 100
+    
+    # Key face regions to monitor
+    left_eye_center = landmarks[468]  # Iris center
+    right_eye_center = landmarks[473]
+    mouth_center = landmarks[13]  # Upper lip center
+    nose_tip = landmarks[1]
+    
+    # 1. Track landmark jitter (high jitter = possible occlusion)
+    current_landmarks = {
+        'left_eye': (left_eye_center.x, left_eye_center.y),
+        'right_eye': (right_eye_center.x, right_eye_center.y),
+        'mouth': (mouth_center.x, mouth_center.y),
+        'nose': (nose_tip.x, nose_tip.y)
+    }
+    
+    landmark_history.append(current_landmarks)
+    if len(landmark_history) > JITTER_HISTORY_FRAMES:
+        landmark_history = landmark_history[-JITTER_HISTORY_FRAMES:]
+    
+    # Calculate jitter for each region
+    if len(landmark_history) >= 3:
+        for region in ['left_eye', 'right_eye', 'mouth', 'nose']:
+            positions = [lm[region] for lm in landmark_history]
+            
+            # Calculate variance in positions
+            x_vals = [p[0] for p in positions]
+            y_vals = [p[1] for p in positions]
+            
+            x_var = np.var(x_vals) if len(x_vals) > 1 else 0
+            y_var = np.var(y_vals) if len(y_vals) > 1 else 0
+            
+            jitter = (x_var + y_var) * 10000  # Scale up for visibility
+            
+            # High jitter indicates occlusion
+            if jitter > 5:  # Threshold for "suspicious" jitter
+                if 'eye' in region:
+                    occluded_regions.append('eyes')
+                elif region == 'mouth':
+                    occluded_regions.append('mouth')
+                confidence -= 20
+    
+    # 2. Check hand proximity to face (if hand landmarks available)
+    if hand_landmarks_list:
+        for hand_lm in hand_landmarks_list:
+            if hand_lm:
+                # Get hand center (wrist landmark)
+                hand_x = hand_lm[0].x if hasattr(hand_lm[0], 'x') else hand_lm[0][0]
+                hand_y = hand_lm[0].y if hasattr(hand_lm[0], 'y') else hand_lm[0][1]
+                
+                # Check if hand is near face regions
+                face_center_x = (landmarks[234].x + landmarks[454].x) / 2
+                face_center_y = (landmarks[10].y + landmarks[152].y) / 2
+                
+                dist_to_face = np.sqrt((hand_x - face_center_x)**2 + (hand_y - face_center_y)**2)
+                
+                if dist_to_face < 0.15:  # Hand very close to face
+                    # Check which region
+                    if abs(hand_y - left_eye_center.y) < 0.1:
+                        occluded_regions.append('eyes_by_hand')
+                    if abs(hand_y - mouth_center.y) < 0.1:
+                        occluded_regions.append('mouth_by_hand')
+                    confidence -= 30
+    
+    # Remove duplicates
+    occluded_regions = list(set(occluded_regions))
+    is_occluded = len(occluded_regions) > 0 or confidence < 70
+    
+    return is_occluded, occluded_regions, max(0, confidence)
+
+
+def calculate_mouth_activity(landmarks, img_shape):
+    """
+    Calculate mouth activity (opening ratio and movement).
+    
+    Returns:
+        mouth_open_ratio: 0-1 (0 = closed, 1 = wide open)
+        mouth_activity: 0-100 (movement intensity over time)
+    """
+    global mouth_history
+    
+    # Mouth landmarks
+    upper_lip = landmarks[13]   # Upper lip center
+    lower_lip = landmarks[14]   # Lower lip center
+    left_mouth = landmarks[61]
+    right_mouth = landmarks[291]
+    
+    # Calculate mouth opening
+    mouth_height = abs(lower_lip.y - upper_lip.y)
+    mouth_width = abs(right_mouth.x - left_mouth.x)
+    
+    if mouth_width > 0:
+        mouth_open_ratio = min(1.0, mouth_height / mouth_width * 2)
+    else:
+        mouth_open_ratio = 0
+    
+    # Track mouth state over time for activity detection
+    mouth_history.append(mouth_open_ratio)
+    if len(mouth_history) > MOUTH_HISTORY_FRAMES:
+        mouth_history = mouth_history[-MOUTH_HISTORY_FRAMES:]
+    
+    # Calculate activity (variance in mouth opening = speaking/movement)
+    if len(mouth_history) >= 3:
+        mouth_activity = np.std(mouth_history) * 500  # Scale for 0-100
+        mouth_activity = min(100, mouth_activity)
+    else:
+        mouth_activity = 0
+    
+    return mouth_open_ratio, mouth_activity
+
+
+def calculate_attention_score(landmarks, img_shape, yaw, pitch, roll, hand_landmarks=None):
+    """
+    Calculate unified attention score combining all signals.
+    
+    Primary signals:
+    - Face present (handled externally)
+    - Head pose (yaw/pitch) duration-based
+    - Facing camera score
+    
+    Secondary signals:
+    - Occlusion detection
+    - Mouth activity
+    
+    Returns:
+        attention_data: dict with all attention metrics
+    """
+    global attention_state, distraction_start_time
+    
+    # 1. Facing camera score
+    facing_score = calculate_facing_score(landmarks, img_shape)
+    
+    # 2. Occlusion detection
+    is_occluded, occluded_regions, landmark_confidence = detect_occlusion(
+        landmarks, img_shape, hand_landmarks
+    )
+    
+    # 3. Mouth activity
+    mouth_open_ratio, mouth_activity = calculate_mouth_activity(landmarks, img_shape)
+    
+    # 4. Head pose contribution to attention
+    # Large yaw/pitch = not paying attention
+    yaw_penalty = min(50, abs(yaw) * 2)  # Up to 50 points penalty
+    pitch_penalty = min(30, abs(pitch) * 1.5)  # Up to 30 points penalty
+    
+    # 5. Calculate overall attention score
+    base_score = 100
+    
+    # Apply penalties
+    base_score -= yaw_penalty
+    base_score -= pitch_penalty
+    
+    # Facing score contribution
+    if facing_score < 70:
+        base_score -= (70 - facing_score) * 0.5
+    
+    # Occlusion penalty
+    if is_occluded:
+        base_score -= 20
+    
+    attention_score = max(0, min(100, base_score))
+    
+    # 6. Determine attention status
+    if is_occluded and 'eyes' in str(occluded_regions):
+        status = 'occluded'
+    elif attention_score < 30:
+        status = 'away'
+    elif attention_score < 60:
+        status = 'distracted'
+    else:
+        status = 'attentive'
+    
+    # 7. Track distraction duration
+    current_time = time.time()
+    if status in ['distracted', 'away', 'occluded']:
+        if distraction_start_time is None:
+            distraction_start_time = current_time
+        distraction_duration = current_time - distraction_start_time
+    else:
+        distraction_start_time = None
+        distraction_duration = 0
+    
+    # Update attention state
+    attention_state.update({
+        'facing_score': round(facing_score, 1),
+        'symmetry_score': round(facing_score, 1),  # Same as facing for now
+        'occlusion_detected': is_occluded,
+        'occlusion_regions': occluded_regions,
+        'mouth_open_ratio': round(mouth_open_ratio, 2),
+        'mouth_activity': round(mouth_activity, 1),
+        'landmark_confidence': landmark_confidence,
+        'attention_score': round(attention_score, 1),
+        'attention_status': status,
+        'distraction_duration': round(distraction_duration, 1),
+    })
+    
+    return attention_state
+
+
+def draw_face_mesh(frame, landmarks, draw_iris=True, draw_contours=True):
+    """
+    Draw face mesh visualization on frame.
+    Uses MediaPipe's FACEMESH_FACE_OVAL for proper face contour.
+    Includes iris tracking.
+    """
+    h, w = frame.shape[:2]
+    
+    if draw_contours:
+        # Draw face oval using proper connection pairs
+        for (i, j) in FACEMESH_FACE_OVAL:
+            pt1 = (int(landmarks[i].x * w), int(landmarks[i].y * h))
+            pt2 = (int(landmarks[j].x * w), int(landmarks[j].y * h))
+            cv2.line(frame, pt1, pt2, (0, 255, 0), 1)
+        
+        # Draw face oval points
+        for idx in FACE_OVAL_INDICES:
+            pt = (int(landmarks[idx].x * w), int(landmarks[idx].y * h))
+            cv2.circle(frame, pt, 2, (0, 255, 0), -1)
+    
+    if draw_iris:
+        # Draw left iris
+        left_iris_center = landmarks[468]
+        left_iris_x = int(left_iris_center.x * w)
+        left_iris_y = int(left_iris_center.y * h)
+        cv2.circle(frame, (left_iris_x, left_iris_y), 3, (0, 255, 255), -1)
+        
+        # Draw left iris outline
+        for i in range(1, 5):
+            pt = landmarks[468 + i]
+            cv2.circle(frame, (int(pt.x * w), int(pt.y * h)), 1, (0, 200, 200), -1)
+        
+        # Draw right iris
+        right_iris_center = landmarks[473]
+        right_iris_x = int(right_iris_center.x * w)
+        right_iris_y = int(right_iris_center.y * h)
+        cv2.circle(frame, (right_iris_x, right_iris_y), 3, (0, 255, 255), -1)
+        
+        # Draw right iris outline
+        for i in range(1, 5):
+            pt = landmarks[473 + i]
+            cv2.circle(frame, (int(pt.x * w), int(pt.y * h)), 1, (0, 200, 200), -1)
+    
+    # Draw eye contours
+    for idx in LEFT_EYE_INDICES:
+        pt = landmarks[idx]
+        cv2.circle(frame, (int(pt.x * w), int(pt.y * h)), 1, (255, 255, 0), -1)
+    
+    for idx in RIGHT_EYE_INDICES:
+        pt = landmarks[idx]
+        cv2.circle(frame, (int(pt.x * w), int(pt.y * h)), 1, (255, 255, 0), -1)
+    
+    return frame
+
+
+def is_looking_at_screen(gaze_data):
+    """
+    Determine if user is looking at the screen based on gaze direction.
+    
+    Args:
+        gaze_data: dict from get_gaze_direction()
+    
+    Returns:
+        (is_looking: bool, reason: str)
+    """
+    direction = gaze_data.get('direction', 'center')
+    source = gaze_data.get('source', '')
+    
+    if direction == "center":
+        return True, "Looking at screen"
+    
+    # Format direction string from human's perspective
+    direction_upper = direction.upper()
+    source_text = f" ({source})" if source else ""
+    
+    return False, f"Looking {direction_upper}{source_text}"
 
 
 # Tracking variables
@@ -587,14 +1354,14 @@ def generate_frames():
         current_time = time.time()
         frame_count += 1
         
-        # Phone detection (run every 3 frames for performance)
+        # Object detection (run every 3 frames for performance)
         if frame_count % 3 == 0:
-            phone_detected, phone_box = detect_phone(frame)
+            phone_detected, phone_box, other_objects = detect_objects(frame)
             gaze_state['phone_detected'] = phone_detected
             
+            # Draw phone if detected
             if phone_detected and phone_box:
                 x1, y1, x2, y2, conf = phone_box
-                # Draw phone bounding box in orange
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 3)
                 cv2.putText(frame, f"PHONE {conf:.0%}", (x1, y1 - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
@@ -609,6 +1376,28 @@ def generate_frames():
                     })
                     gaze_state['total_flags'] += 1
                     gaze_state['phone_flags'] += 1
+                    last_phone_flag_time = current_time
+            
+            # Draw and flag other suspicious objects
+            for obj in other_objects:
+                x1, y1, x2, y2 = obj['box']
+                obj_name = obj['name']
+                conf = obj['confidence']
+                
+                # Draw object bounding box in yellow
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                cv2.putText(frame, f"{obj_name.upper()} {conf:.0%}", (x1, y1 - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                
+                # Flag for object detection (use same cooldown)
+                if current_time - last_phone_flag_time >= FLAG_COOLDOWN:
+                    flag_time = datetime.now().strftime("%H:%M:%S")
+                    gaze_state['flags'].append({
+                        'time': flag_time,
+                        'reason': f'⚠️ {obj_name.title()} detected!',
+                        'duration': '-'
+                    })
+                    gaze_state['total_flags'] += 1
                     last_phone_flag_time = current_time
         
         # Hand detection (run every 2 frames for better responsiveness)
@@ -776,16 +1565,39 @@ def generate_frames():
             # Get first face landmarks (list of NormalizedLandmark objects)
             landmarks = detection_result.face_landmarks[0]
             
-            # Get eye gaze using iris landmarks (now returns position tuple and direction)
-            left_gaze, left_dir = get_gaze_ratio(LEFT_EYE_INDICES, LEFT_IRIS_INDICES, gray, landmarks, frame.shape)
-            right_gaze, right_dir = get_gaze_ratio(RIGHT_EYE_INDICES, RIGHT_IRIS_INDICES, gray, landmarks, frame.shape)
-            
-            # Get head pose
+            # Get head pose first (needed for gaze direction)
             pitch, yaw, roll = get_head_pose(landmarks, frame.shape)
+            
+            # Apply calibration offset to pitch
+            adjusted_pitch = pitch - gaze_state.get('pitch_offset', 0)
+            
+            # Get gaze direction using MediaPipe face landmarks
+            gaze_data = get_gaze_direction(landmarks, frame.shape, head_yaw=yaw, head_pitch=adjusted_pitch)
+            
+            # Calculate eye openness and blink detection
+            left_openness, right_openness, avg_openness, is_blinking = calculate_eye_openness(landmarks, frame.shape)
+            gaze_state['eye_openness_left'] = left_openness
+            gaze_state['eye_openness_right'] = right_openness
+            gaze_state['eye_openness_avg'] = avg_openness
+            gaze_state['is_blinking'] = is_blinking
+            
+            # Track blinks
+            if is_blinking:
+                gaze_state['blink_count'] += 1
+            
+            # Store gaze data in state
+            gaze_state['iris_position'] = {
+                'left': {'h': round(gaze_data.get('iris_h', 0.5), 2), 'v': round(gaze_data.get('iris_v', 0.5), 2)},
+                'right': {'h': round(gaze_data.get('iris_h', 0.5), 2), 'v': round(gaze_data.get('iris_v', 0.5), 2)}
+            }
             
             # Store raw values for display
             gaze_state['pitch'] = pitch
             gaze_state['yaw'] = yaw
+            gaze_state['head_roll'] = roll
+            
+            # Draw face mesh with iris tracking
+            frame = draw_face_mesh(frame, landmarks, draw_iris=True, draw_contours=False)
             
             # Auto-calibration: collect samples during first frames
             if not gaze_state['calibrated']:
@@ -802,10 +1614,22 @@ def generate_frames():
                 cv2.putText(frame, "Look at the screen normally", (50, 90),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
             else:
-                # Determine if looking at screen (with calibration offset and improved detection)
-                is_looking, reason = is_looking_at_screen(
-                    left_gaze, right_gaze, left_dir, right_dir, pitch, yaw, gaze_state['pitch_offset']
+                # Determine if looking at screen using new gaze detection
+                is_looking, reason = is_looking_at_screen(gaze_data)
+                
+                # Calculate full-face attention score
+                hand_lm_for_attention = gaze_state.get('hand_landmarks', [])
+                attention_data = calculate_attention_score(
+                    landmarks, frame.shape, yaw, adjusted_pitch, roll, 
+                    hand_landmarks=hand_lm_for_attention
                 )
+                
+                # Update gaze state with attention metrics
+                gaze_state['attention_score'] = attention_data['attention_score']
+                gaze_state['attention_status'] = attention_data['attention_status']
+                gaze_state['facing_score'] = attention_data['facing_score']
+                gaze_state['occlusion_detected'] = attention_data['occlusion_detected']
+                gaze_state['mouth_activity'] = attention_data['mouth_activity']
                 
                 # Update state
                 gaze_state['status'] = 'tracking'
@@ -846,27 +1670,52 @@ def generate_frames():
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
                 # Draw gaze direction indicators
-                left_h, left_v = left_gaze
-                right_h, right_v = right_gaze
-                avg_h = (left_h + right_h) / 2
-                avg_v = (left_v + right_v) / 2
+                iris_h = gaze_data.get('iris_h', 0.5)
+                iris_v = gaze_data.get('iris_v', 0.5)
+                
+                # Convert iris position (0-1) to offset from center (-0.5 to 0.5)
+                h_offset = iris_h - 0.5
+                v_offset = iris_v - 0.5
                 
                 # Draw directional arrow based on gaze
                 center_x, center_y = w // 2, h // 2
-                arrow_length = 80
+                arrow_length = 150
                 arrow_color = (0, 255, 255) if is_looking else (0, 0, 255)
                 
                 # Calculate arrow endpoint based on gaze direction
-                end_x = int(center_x + avg_h * arrow_length)
-                end_y = int(center_y + avg_v * arrow_length)
+                end_x = int(center_x + h_offset * arrow_length * 2)
+                end_y = int(center_y + v_offset * arrow_length * 2)
                 
                 # Draw arrow from center
                 cv2.arrowedLine(frame, (center_x, center_y), (end_x, end_y), 
                                arrow_color, 3, tipLength=0.3)
                 
                 # Draw gaze values
-                cv2.putText(frame, f"Gaze H: {avg_h:.2f} V: {avg_v:.2f}", (50, 120),
+                direction_text = gaze_data.get('direction', 'center')
+                cv2.putText(frame, f"Direction: {direction_text.upper()} | Iris H: {iris_h:.2f} V: {iris_v:.2f}", (50, 120),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                
+                # Draw attention score (full-face monitoring)
+                att_score = attention_data['attention_score']
+                att_status = attention_data['attention_status']
+                facing = attention_data['facing_score']
+                
+                # Color based on attention status
+                if att_status == 'attentive':
+                    att_color = (0, 255, 0)
+                elif att_status == 'distracted':
+                    att_color = (0, 165, 255)
+                else:  # away or occluded
+                    att_color = (0, 0, 255)
+                
+                cv2.putText(frame, f"Attention: {att_score:.0f}% ({att_status.upper()}) | Facing: {facing:.0f}%", 
+                           (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, att_color, 1)
+                
+                # Show occlusion warning if detected
+                if attention_data['occlusion_detected']:
+                    regions = ', '.join(attention_data['occlusion_regions'])
+                    cv2.putText(frame, f"OCCLUSION: {regions}", (50, 180),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                 
                 # Handle looking away detection
                 if not is_looking:
@@ -1048,6 +1897,9 @@ if __name__ == '__main__':
     print("=" * 50)
     
     try:
+        # Reset all counters to 0 at start
+        reset_all_counters()
+        
         print("\nInitializing models...")
         models_loaded = init_models()
         print(f"\nModels loaded result: {models_loaded}")

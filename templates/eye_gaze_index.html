@@ -134,6 +134,59 @@
                             <span id="phone-status" class="font-medium">-</span>
                         </div>
                         
+                        <div class="border-t border-gray-600 my-3"></div>
+                        <h4 class="text-sm font-semibold text-cyan-400 mb-2">👁️ Eye Tracking</h4>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Eye Openness:</span>
+                            <span id="eye-openness" class="font-medium text-cyan-400">100%</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Blink Count:</span>
+                            <span id="blink-count" class="font-medium text-cyan-400">0</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Iris Position:</span>
+                            <span id="iris-position" class="font-medium text-cyan-400">Center</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Head Roll:</span>
+                            <span id="head-roll" class="font-medium text-cyan-400">0°</span>
+                        </div>
+                        
+                        <div class="border-t border-gray-600 my-3"></div>
+                        <h4 class="text-sm font-semibold text-purple-400 mb-2">🎯 Attention Monitoring</h4>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Attention Score:</span>
+                            <span id="attention-score" class="font-bold text-lg text-purple-400">100%</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Status:</span>
+                            <span id="attention-status" class="font-medium text-green-400">Attentive</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Facing Camera:</span>
+                            <span id="facing-score" class="font-medium text-purple-400">100%</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Occlusion:</span>
+                            <span id="occlusion-status" class="font-medium text-green-400">None</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Mouth Activity:</span>
+                            <span id="mouth-activity" class="font-medium text-purple-400">0%</span>
+                        </div>
+                        
+                        <div class="border-t border-gray-600 my-3"></div>
+                        
                         <div class="flex justify-between items-center">
                             <span class="text-gray-400">Total Flags:</span>
                             <span id="total-flags" class="font-bold text-2xl text-red-400">0</span>
@@ -274,8 +327,27 @@
             fetch('/status')
                 .then(response => response.json())
                 .then(data => {
-                    // Update direction
-                    document.getElementById('direction').textContent = data.direction || '-';
+                    // Update direction with emoji
+                    const directionEl = document.getElementById('direction');
+                    let dirText = data.direction || '-';
+                    let emoji = '';
+                    
+                    if (dirText.includes('LEFT')) emoji = '👈 ';
+                    else if (dirText.includes('RIGHT')) emoji = '👉 ';
+                    else if (dirText.includes('UP')) emoji = '👆 ';
+                    else if (dirText.includes('DOWN')) emoji = '👇 ';
+                    else if (dirText.includes('screen')) emoji = '✅ ';
+                    
+                    directionEl.textContent = emoji + dirText;
+                    
+                    // Color based on looking at screen or not
+                    if (dirText.includes('screen')) {
+                        directionEl.classList.add('text-green-400');
+                        directionEl.classList.remove('text-red-400', 'text-yellow-400');
+                    } else {
+                        directionEl.classList.add('text-red-400');
+                        directionEl.classList.remove('text-green-400', 'text-yellow-400');
+                    }
                     
                     // Update looking away duration
                     const duration = data.looking_away_duration || 0;
@@ -298,6 +370,59 @@
                     
                     // Update phone flags
                     document.getElementById('phone-flags').textContent = data.phone_flags || 0;
+                    
+                    // Update attention monitoring
+                    const attScore = data.attention_score || 100;
+                    const attScoreEl = document.getElementById('attention-score');
+                    attScoreEl.textContent = attScore.toFixed(0) + '%';
+                    
+                    // Color based on score
+                    if (attScore >= 70) {
+                        attScoreEl.classList.add('text-green-400');
+                        attScoreEl.classList.remove('text-yellow-400', 'text-red-400');
+                    } else if (attScore >= 40) {
+                        attScoreEl.classList.add('text-yellow-400');
+                        attScoreEl.classList.remove('text-green-400', 'text-red-400');
+                    } else {
+                        attScoreEl.classList.add('text-red-400');
+                        attScoreEl.classList.remove('text-green-400', 'text-yellow-400');
+                    }
+                    
+                    // Update attention status
+                    const attStatus = data.attention_status || 'attentive';
+                    const attStatusEl = document.getElementById('attention-status');
+                    attStatusEl.textContent = attStatus.charAt(0).toUpperCase() + attStatus.slice(1);
+                    
+                    if (attStatus === 'attentive') {
+                        attStatusEl.classList.add('text-green-400');
+                        attStatusEl.classList.remove('text-yellow-400', 'text-red-400');
+                    } else if (attStatus === 'distracted') {
+                        attStatusEl.classList.add('text-yellow-400');
+                        attStatusEl.classList.remove('text-green-400', 'text-red-400');
+                    } else {
+                        attStatusEl.classList.add('text-red-400');
+                        attStatusEl.classList.remove('text-green-400', 'text-yellow-400');
+                    }
+                    
+                    // Update facing score
+                    const facingScore = data.facing_score || 100;
+                    document.getElementById('facing-score').textContent = facingScore.toFixed(0) + '%';
+                    
+                    // Update occlusion status
+                    const occlusionEl = document.getElementById('occlusion-status');
+                    if (data.occlusion_detected) {
+                        occlusionEl.textContent = '⚠️ Detected';
+                        occlusionEl.classList.add('text-red-400');
+                        occlusionEl.classList.remove('text-green-400');
+                    } else {
+                        occlusionEl.textContent = '✅ None';
+                        occlusionEl.classList.add('text-green-400');
+                        occlusionEl.classList.remove('text-red-400');
+                    }
+                    
+                    // Update mouth activity
+                    const mouthActivity = data.mouth_activity || 0;
+                    document.getElementById('mouth-activity').textContent = mouthActivity.toFixed(0) + '%';
                     
                     // Update tab switch stats
                     document.getElementById('tab-switches').textContent = data.tab_switches || 0;
@@ -351,6 +476,31 @@
                     
                     // Update gesture
                     document.getElementById('hand-gesture').textContent = data.hand_gesture || 'none';
+                    
+                    // Update eye tracking stats
+                    const eyeOpenness = Math.round(data.eye_openness_avg || 100);
+                    document.getElementById('eye-openness').textContent = `${eyeOpenness}%`;
+                    if (data.is_blinking) {
+                        document.getElementById('eye-openness').textContent = '👁️ Blinking';
+                    }
+                    
+                    document.getElementById('blink-count').textContent = data.blink_count || 0;
+                    
+                    // Update iris position display
+                    const irisPos = data.iris_position || {left: {h: 0, v: 0}, right: {h: 0, v: 0}};
+                    const avgH = ((irisPos.left?.h || 0) + (irisPos.right?.h || 0)) / 2;
+                    const avgV = ((irisPos.left?.v || 0) + (irisPos.right?.v || 0)) / 2;
+                    let irisText = 'Center';
+                    if (Math.abs(avgH) > 0.3 || Math.abs(avgV) > 0.3) {
+                        const hDir = avgH < -0.3 ? '←' : avgH > 0.3 ? '→' : '';
+                        const vDir = avgV < -0.3 ? '↑' : avgV > 0.3 ? '↓' : '';
+                        irisText = `${hDir}${vDir}` || 'Center';
+                    }
+                    document.getElementById('iris-position').textContent = irisText;
+                    
+                    // Update head roll
+                    const headRoll = Math.round(data.head_roll || 0);
+                    document.getElementById('head-roll').textContent = `${headRoll}°`;
                     
                     // Update holding object status
                     const holdingObject = document.getElementById('holding-object');
