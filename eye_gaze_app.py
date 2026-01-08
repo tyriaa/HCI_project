@@ -16,6 +16,8 @@ from ultralytics import YOLO
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from deepface import DeepFace
+import pygame
 
 app = Flask(__name__)
 
@@ -60,7 +62,11 @@ gaze_state = {
     'attention_status': 'attentive',
     'facing_score': 100,
     'occlusion_detected': False,
-    'mouth_activity': 0
+    'mouth_activity': 0,
+    # Emotion detection
+    'emotion': 'unknown',
+    'emotion_confidence': 0,
+    'all_emotions': {}
 }
 
 def reset_all_counters():
@@ -1320,11 +1326,69 @@ def is_looking_at_screen(gaze_data):
 # Tracking variables
 looking_away_start = None
 last_flag_time = 0
+last_emotion_time = 0
+EMOTION_DETECTION_INTERVAL = 3.0  # Detect emotion every 3 seconds for performance
+
+# Initialize pygame mixer for audio
+pygame.mixer.init()
+current_playing_emotion = None
+
+# Music mapping for emotions
+EMOTION_MUSIC = {
+    'happy': 'music/happy.mp3',
+    'sad': 'music/sad.mp3',
+    'surprise': 'music/surprise.mp3',
+    'disgust': 'music/disgust.mp3',
+    'neutral': 'music/neutral.mp3'
+}
+
+
+def play_emotion_music(emotion):
+    """Play music based on detected emotion."""
+    global current_playing_emotion
+    
+    # Don't restart if same emotion is already playing
+    if current_playing_emotion == emotion and pygame.mixer.music.get_busy():
+        return
+    
+    # Check if music file exists for this emotion
+    music_file = EMOTION_MUSIC.get(emotion)
+    if music_file and os.path.exists(music_file):
+        try:
+            pygame.mixer.music.load(music_file)
+            pygame.mixer.music.play(-1)  # Loop indefinitely
+            pygame.mixer.music.set_volume(0.3)  # Set volume to 30%
+            current_playing_emotion = emotion
+            print(f"🎵 Playing music for emotion: {emotion}")
+        except Exception as e:
+            print(f"⚠️ Could not play music for {emotion}: {e}")
+    else:
+        # Stop music if no file exists for this emotion
+        if pygame.mixer.music.get_busy():
+            pygame.mixer.music.stop()
+            current_playing_emotion = None
+
+
+def detect_emotion(frame):
+    """Detect emotion from face using DeepFace."""
+    try:
+        # Analyze emotion - use enforce_detection=False to avoid errors when face not found
+        result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False, silent=True)
+        
+        if result and len(result) > 0:
+            emotions = result[0].get('emotion', {})
+            dominant_emotion = result[0].get('dominant_emotion', 'unknown')
+            confidence = emotions.get(dominant_emotion, 0)
+            return dominant_emotion, confidence, emotions
+    except Exception as e:
+        pass
+    
+    return 'unknown', 0, {}
 
 
 def generate_frames():
     """Generate video frames with gaze detection overlay."""
-    global gaze_state, looking_away_start, last_flag_time, calibration_samples, last_phone_flag_time
+    global gaze_state, looking_away_start, last_flag_time, calibration_samples, last_phone_flag_time, last_emotion_time
     
     if face_landmarker is None:
         if not init_models():
@@ -1399,6 +1463,40 @@ def generate_frames():
                     })
                     gaze_state['total_flags'] += 1
                     last_phone_flag_time = current_time
+        
+        # Emotion detection (run every EMOTION_DETECTION_INTERVAL seconds for performance)
+        if current_time - last_emotion_time >= EMOTION_DETECTION_INTERVAL:
+            emotion, confidence, all_emotions = detect_emotion(frame)
+            
+            # Filter out fear, angry and sad emotions - replace with next best
+            if emotion in ['fear', 'angry', 'sad']:
+                # Get the next best emotion that's not fear, angry or sad
+                filtered_emotions = {k: v for k, v in all_emotions.items() if k not in ['fear', 'angry', 'sad']}
+                if filtered_emotions:
+                    emotion = max(filtered_emotions, key=filtered_emotions.get)
+                    confidence = filtered_emotions[emotion]
+                else:
+                    emotion = 'neutral'
+                    confidence = 0
+            
+            gaze_state['emotion'] = emotion
+            gaze_state['emotion_confidence'] = confidence
+            gaze_state['all_emotions'] = all_emotions
+            last_emotion_time = current_time
+            
+            # Play music based on emotion
+            play_emotion_music(emotion)
+            
+            # Draw emotion on frame
+            emotion_color = (0, 255, 0)  # Green by default
+            if emotion in ['sad', 'disgust']:
+                emotion_color = (0, 0, 255)  # Red for negative emotions
+            elif emotion == 'surprise':
+                emotion_color = (0, 255, 255)  # Yellow for surprise
+            
+            cv2.putText(frame, f"Emotion: {emotion} ({confidence:.0f}%)", 
+                       (frame.shape[1] - 300, 80),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, emotion_color, 2)
         
         # Hand detection (run every 2 frames for better responsiveness)
         if frame_count % 2 == 0 and hand_landmarker is not None:

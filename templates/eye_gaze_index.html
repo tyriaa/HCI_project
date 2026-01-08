@@ -257,6 +257,18 @@
                             <span class="text-gray-400">Behavior Flags:</span>
                             <span id="behavior-flags" class="font-bold text-orange-400">0</span>
                         </div>
+                        
+                        <div class="border-t border-gray-600 my-3"></div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">😊 Emotion:</span>
+                            <span id="emotion" class="font-medium text-pink-400">unknown</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Confidence:</span>
+                            <span id="emotion-confidence" class="font-medium text-pink-400">0%</span>
+                        </div>
                     </div>
                 </div>
                 
@@ -308,11 +320,6 @@
             </div>
         </div>
     </div>
-    
-    <!-- Alert Sound (optional) -->
-    <audio id="alert-sound" preload="auto">
-        <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2teleQAA" type="audio/wav">
-    </audio>
     
     <script>
         let lastFlagCount = 0;
@@ -533,6 +540,43 @@
                     // Update behavior flags
                     document.getElementById('behavior-flags').textContent = data.behavior_flags || 0;
                     
+                    // Update emotion
+                    const emotionElement = document.getElementById('emotion');
+                    const emotionConfElement = document.getElementById('emotion-confidence');
+                    const emotion = data.emotion || 'unknown';
+                    const emotionConf = data.emotion_confidence || 0;
+                    
+                    // Emoji mapping for emotions
+                    const emotionEmojis = {
+                        'happy': '😊',
+                        'sad': '😢',
+                        'angry': '😠',
+                        'fear': '😨',
+                        'surprise': '😲',
+                        'disgust': '🤢',
+                        'neutral': '😐',
+                        'unknown': '❓'
+                    };
+                    
+                    const emotionEmoji = emotionEmojis[emotion] || '❓';
+                    emotionElement.textContent = `${emotionEmoji} ${emotion}`;
+                    emotionConfElement.textContent = `${emotionConf.toFixed(0)}%`;
+                    
+                    // Color based on emotion type
+                    if (['happy'].includes(emotion)) {
+                        emotionElement.classList.remove('text-red-400', 'text-yellow-400', 'text-gray-400');
+                        emotionElement.classList.add('text-green-400');
+                    } else if (['angry', 'fear', 'sad', 'disgust'].includes(emotion)) {
+                        emotionElement.classList.remove('text-green-400', 'text-yellow-400', 'text-gray-400');
+                        emotionElement.classList.add('text-red-400');
+                    } else if (['surprise'].includes(emotion)) {
+                        emotionElement.classList.remove('text-green-400', 'text-red-400', 'text-gray-400');
+                        emotionElement.classList.add('text-yellow-400');
+                    } else {
+                        emotionElement.classList.remove('text-green-400', 'text-red-400', 'text-yellow-400');
+                        emotionElement.classList.add('text-gray-400');
+                    }
+                    
                     // Update overlay status
                     const overlay = document.getElementById('overlay-status');
                     const statusIcon = document.getElementById('status-icon');
@@ -557,10 +601,6 @@
                     // Update flag list if new flags
                     if (data.total_flags > lastFlagCount) {
                         updateFlagList(data.flags);
-                        // Play alert sound
-                        try {
-                            document.getElementById('alert-sound').play();
-                        } catch (e) {}
                         lastFlagCount = data.total_flags;
                     }
                     
