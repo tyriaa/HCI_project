@@ -66,7 +66,14 @@ gaze_state = {
     # Emotion detection
     'emotion': 'unknown',
     'emotion_confidence': 0,
-    'all_emotions': {}
+    'all_emotions': {},
+    # Hierarchical face/iris detection
+    'face_direction': 'center',
+    'iris_direction': 'center',
+    'signal_agreement': True,
+    'attention_confidence': 'high',
+    'face_away_duration': 0,
+    'iris_away_duration': 0
 }
 
 def reset_all_counters():
@@ -1300,27 +1307,158 @@ def draw_face_mesh(frame, landmarks, draw_iris=True, draw_contours=True):
     return frame
 
 
+# Hierarchical detection tracking
+face_away_start = None
+iris_away_start = None
+
+# Duration thresholds (in seconds) - T1 < T2 < T3
+DURATION_T1 = 1.0   # High confidence (face + iris agree) - short threshold
+DURATION_T2 = 2.0   # Low confidence (face away, iris on screen) - medium threshold  
+DURATION_T3 = 3.5   # Very low confidence (face forward, iris away) - long threshold
+
+# Thresholds for detection
+HEAD_YAW_THRESHOLD = 15.0    # degrees - head turned away
+HEAD_PITCH_THRESHOLD = 12.0  # degrees - head tilted up/down
+IRIS_H_THRESHOLD = 0.15      # iris horizontal offset from center
+IRIS_V_THRESHOLD = 0.15      # iris vertical offset from center
+
+
+def get_face_direction(head_yaw, head_pitch):
+    """
+    Determine face direction from head pose angles.
+    Returns: (direction: str, is_away: bool)
+    """
+    if abs(head_yaw) > HEAD_YAW_THRESHOLD:
+        if head_yaw > 0:
+            return "left", True
+        else:
+            return "right", True
+    
+    if abs(head_pitch) > HEAD_PITCH_THRESHOLD:
+        if head_pitch > 0:
+            return "down", True
+        else:
+            return "up", True
+    
+    return "center", False
+
+
+def get_iris_direction(iris_h, iris_v):
+    """
+    Determine iris direction from iris position.
+    iris_h, iris_v are 0-1 values where 0.5 is center.
+    Returns: (direction: str, is_away: bool)
+    """
+    h_offset = iris_h - 0.5
+    v_offset = iris_v - 0.5
+    
+    # Check horizontal first (usually more reliable)
+    if abs(h_offset) > IRIS_H_THRESHOLD:
+        if h_offset > 0:
+            return "left", True  # Mirrored: iris right in image = looking left
+        else:
+            return "right", True
+    
+    if abs(v_offset) > IRIS_V_THRESHOLD:
+        if v_offset > 0:
+            return "down", True
+        else:
+            return "up", True
+    
+    return "center", False
+
+
 def is_looking_at_screen(gaze_data):
     """
-    Determine if user is looking at the screen based on gaze direction.
+    Hierarchical attention detection: Face direction is primary gate,
+    iris direction is checked conditionally.
+    
+    Logic:
+    - Face forward + Iris center = HIGH confidence attentive
+    - Face forward + Iris away = VERY LOW confidence away (micro-glances, thinking)
+    - Face away + Iris away = HIGH confidence away
+    - Face away + Iris on screen = LOW confidence away (peripheral vision, second monitor)
     
     Args:
         gaze_data: dict from get_gaze_direction()
     
     Returns:
-        (is_looking: bool, reason: str)
+        (is_looking: bool, reason: str, confidence: str, face_dir: str, iris_dir: str)
     """
-    direction = gaze_data.get('direction', 'center')
-    source = gaze_data.get('source', '')
+    global face_away_start, iris_away_start
     
-    if direction == "center":
-        return True, "Looking at screen"
+    head_yaw = gaze_data.get('head_yaw', 0)
+    head_pitch = gaze_data.get('head_pitch', 0)
+    iris_h = gaze_data.get('iris_h', 0.5)
+    iris_v = gaze_data.get('iris_v', 0.5)
     
-    # Format direction string from human's perspective
-    direction_upper = direction.upper()
-    source_text = f" ({source})" if source else ""
+    current_time = time.time()
     
-    return False, f"Looking {direction_upper}{source_text}"
+    # Get individual directions
+    face_dir, face_away = get_face_direction(head_yaw, head_pitch)
+    iris_dir, iris_away = get_iris_direction(iris_h, iris_v)
+    
+    # Update gaze_state with separate directions
+    gaze_state['face_direction'] = face_dir
+    gaze_state['iris_direction'] = iris_dir
+    gaze_state['signal_agreement'] = (face_away == iris_away)
+    
+    # Track durations
+    if face_away:
+        if face_away_start is None:
+            face_away_start = current_time
+        gaze_state['face_away_duration'] = current_time - face_away_start
+    else:
+        face_away_start = None
+        gaze_state['face_away_duration'] = 0
+    
+    if iris_away:
+        if iris_away_start is None:
+            iris_away_start = current_time
+        gaze_state['iris_away_duration'] = current_time - iris_away_start
+    else:
+        iris_away_start = None
+        gaze_state['iris_away_duration'] = 0
+    
+    # === HIERARCHICAL DECISION LOGIC ===
+    
+    # Case A: Face away + Iris away (HIGH confidence away)
+    if face_away and iris_away:
+        duration = gaze_state['face_away_duration']
+        if duration >= DURATION_T1:
+            gaze_state['attention_confidence'] = 'high'
+            return False, f"Looking {face_dir.upper()} (confirmed)", 'high', face_dir, iris_dir
+        else:
+            # Brief glance, not yet flagged
+            gaze_state['attention_confidence'] = 'pending'
+            return True, "Brief glance", 'pending', face_dir, iris_dir
+    
+    # Case B: Face away + Iris on screen (LOW confidence - peripheral vision)
+    elif face_away and not iris_away:
+        duration = gaze_state['face_away_duration']
+        if duration >= DURATION_T2:
+            gaze_state['attention_confidence'] = 'low'
+            return False, f"Head turned {face_dir.upper()}", 'low', face_dir, iris_dir
+        else:
+            # Disagreement - don't punish, likely camera angle or peripheral reading
+            gaze_state['attention_confidence'] = 'uncertain'
+            return True, "Peripheral attention", 'uncertain', face_dir, iris_dir
+    
+    # Case C: Face forward + Iris away (VERY LOW confidence - thinking, micro-glances)
+    elif not face_away and iris_away:
+        duration = gaze_state['iris_away_duration']
+        if duration >= DURATION_T3:
+            gaze_state['attention_confidence'] = 'very_low'
+            return False, f"Eyes {iris_dir.upper()} (prolonged)", 'very_low', face_dir, iris_dir
+        else:
+            # Normal micro-glances, thinking - don't flag
+            gaze_state['attention_confidence'] = 'normal'
+            return True, "Looking at screen", 'normal', face_dir, iris_dir
+    
+    # Case D: Face forward + Iris center (HIGH confidence attentive)
+    else:
+        gaze_state['attention_confidence'] = 'high'
+        return True, "Looking at screen", 'high', face_dir, iris_dir
 
 
 # Tracking variables
@@ -1712,8 +1850,8 @@ def generate_frames():
                 cv2.putText(frame, "Look at the screen normally", (50, 90),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
             else:
-                # Determine if looking at screen using new gaze detection
-                is_looking, reason = is_looking_at_screen(gaze_data)
+                # Determine if looking at screen using hierarchical detection
+                is_looking, reason, confidence, face_dir, iris_dir = is_looking_at_screen(gaze_data)
                 
                 # Calculate full-face attention score
                 hand_lm_for_attention = gaze_state.get('hand_landmarks', [])
@@ -1788,9 +1926,12 @@ def generate_frames():
                 cv2.arrowedLine(frame, (center_x, center_y), (end_x, end_y), 
                                arrow_color, 3, tipLength=0.3)
                 
-                # Draw gaze values
-                direction_text = gaze_data.get('direction', 'center')
-                cv2.putText(frame, f"Direction: {direction_text.upper()} | Iris H: {iris_h:.2f} V: {iris_v:.2f}", (50, 120),
+                # Draw hierarchical gaze info (face vs iris)
+                face_d = gaze_state.get('face_direction', 'center').upper()
+                iris_d = gaze_state.get('iris_direction', 'center').upper()
+                conf = gaze_state.get('attention_confidence', 'high')
+                agree = "✓" if gaze_state.get('signal_agreement', True) else "✗"
+                cv2.putText(frame, f"Face: {face_d} | Iris: {iris_d} | Agree: {agree} | Conf: {conf}", (50, 120),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
                 # Draw attention score (full-face monitoring)
