@@ -5,7 +5,7 @@ Real-time webcam monitoring to detect if user is looking at the screen.
 Flags when user looks away from the screen.
 """
 
-from flask import Flask, render_template, Response, jsonify
+from flask import Flask, render_template, Response, jsonify, request
 import cv2
 import numpy as np
 import time
@@ -33,7 +33,11 @@ gaze_state = {
     'calibrated': False,
     'pitch_offset': 0,
     'phone_detected': False,
-    'phone_flags': 0
+    'phone_flags': 0,
+    'tab_switches': 0,
+    'window_blurs': 0,
+    'tab_switch_flags': 0,
+    'is_tab_visible': True
 }
 
 # Configuration
@@ -482,6 +486,98 @@ def recalibrate():
     calibration_samples = []
     gaze_state['calibrated'] = False
     gaze_state['pitch_offset'] = 0
+    return jsonify({'success': True})
+
+
+@app.route('/tab_switch', methods=['POST'])
+def tab_switch():
+    """Track tab switching events."""
+    data = request.get_json()
+    action = data.get('action')
+    timestamp = data.get('timestamp')
+    
+    if action == 'hidden':
+        gaze_state['tab_switches'] += 1
+        gaze_state['is_tab_visible'] = False
+        print(f"⚠️ Tab switched away at {timestamp}")
+        
+        # Flag immediately when tab is switched
+        flag_time = datetime.now().strftime("%H:%M:%S")
+        gaze_state['flags'].append({
+            'time': flag_time,
+            'reason': '🔄 Tab switched away!',
+            'duration': '-'
+        })
+        gaze_state['total_flags'] += 1
+        gaze_state['tab_switch_flags'] += 1
+    elif action == 'visible':
+        gaze_state['is_tab_visible'] = True
+        duration = data.get('duration', '0')
+        print(f"✅ Tab returned after {duration}s")
+    
+    return jsonify({'success': True})
+
+
+@app.route('/window_focus', methods=['POST'])
+def window_focus():
+    """Track window focus/blur events."""
+    data = request.get_json()
+    action = data.get('action')
+    timestamp = data.get('timestamp')
+    
+    if action == 'blur':
+        gaze_state['window_blurs'] += 1
+        print(f"⚠️ Window lost focus at {timestamp}")
+        
+        # Flag immediately when window loses focus
+        flag_time = datetime.now().strftime("%H:%M:%S")
+        gaze_state['flags'].append({
+            'time': flag_time,
+            'reason': '🪟 Window lost focus!',
+            'duration': '-'
+        })
+        gaze_state['total_flags'] += 1
+    elif action == 'focus':
+        print(f"✅ Window gained focus at {timestamp}")
+    
+    return jsonify({'success': True})
+
+
+@app.route('/fullscreen_exit', methods=['POST'])
+def fullscreen_exit():
+    """Track fullscreen exit events."""
+    data = request.get_json()
+    timestamp = data.get('timestamp')
+    
+    flag_time = datetime.now().strftime("%H:%M:%S")
+    gaze_state['flags'].append({
+        'time': flag_time,
+        'reason': '🖥️ Exited fullscreen',
+        'duration': '-'
+    })
+    gaze_state['total_flags'] += 1
+    print(f"⚠️ Fullscreen exited at {timestamp}")
+    
+    return jsonify({'success': True})
+
+
+@app.route('/window_resize', methods=['POST'])
+def window_resize():
+    """Track window resize events (catches minimize and window manipulation)."""
+    data = request.get_json()
+    timestamp = data.get('timestamp')
+    old_size = data.get('oldSize', {})
+    new_size = data.get('newSize', {})
+    
+    flag_time = datetime.now().strftime("%H:%M:%S")
+    gaze_state['flags'].append({
+        'time': flag_time,
+        'reason': '↔️ Window resized/moved',
+        'duration': '-'
+    })
+    gaze_state['total_flags'] += 1
+    print(f"⚠️ Window resized at {timestamp}: {old_size.get('width')}x{old_size.get('height')} → {new_size.get('width')}x{new_size.get('height')}")
+    
     return jsonify({'success': True})
 
 

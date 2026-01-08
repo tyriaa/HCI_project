@@ -143,6 +143,23 @@
                             <span class="text-gray-400">Phone Flags:</span>
                             <span id="phone-flags" class="font-bold text-orange-400">0</span>
                         </div>
+                        
+                        <div class="border-t border-gray-600 my-3"></div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">🔄 Tab Switches:</span>
+                            <span id="tab-switches" class="font-medium text-yellow-400">0</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">🪟 Window Blurs:</span>
+                            <span id="window-blurs" class="font-medium text-yellow-400">0</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Tab Status:</span>
+                            <span id="tab-status" class="font-medium text-green-400">✅ Visible</span>
+                        </div>
                     </div>
                 </div>
                 
@@ -203,6 +220,10 @@
     <script>
         let lastFlagCount = 0;
         let previousFlags = [];
+        let tabSwitchCount = 0;
+        let windowBlurCount = 0;
+        let isTabVisible = true;
+        let tabSwitchStartTime = null;
         
         // Update status periodically
         function updateStatus() {
@@ -233,6 +254,22 @@
                     
                     // Update phone flags
                     document.getElementById('phone-flags').textContent = data.phone_flags || 0;
+                    
+                    // Update tab switch stats
+                    document.getElementById('tab-switches').textContent = data.tab_switches || 0;
+                    document.getElementById('window-blurs').textContent = data.window_blurs || 0;
+                    
+                    // Update tab status
+                    const tabStatus = document.getElementById('tab-status');
+                    if (data.is_tab_visible) {
+                        tabStatus.textContent = '✅ Visible';
+                        tabStatus.classList.add('text-green-400');
+                        tabStatus.classList.remove('text-red-400');
+                    } else {
+                        tabStatus.textContent = '⚠️ Hidden';
+                        tabStatus.classList.add('text-red-400');
+                        tabStatus.classList.remove('text-green-400');
+                    }
                     
                     // Update overlay status
                     const overlay = document.getElementById('overlay-status');
@@ -319,6 +356,124 @@
                     }
                 });
         }
+        
+        // Tab visibility detection
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                // User switched tabs or minimized window
+                isTabVisible = false;
+                tabSwitchStartTime = Date.now();
+                tabSwitchCount++;
+                console.log('⚠️ Tab switched away or minimized');
+                
+                // Send flag to backend
+                fetch('/tab_switch', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        action: 'hidden',
+                        timestamp: new Date().toISOString()
+                    })
+                });
+            } else {
+                // User returned to tab
+                isTabVisible = true;
+                if (tabSwitchStartTime) {
+                    const duration = ((Date.now() - tabSwitchStartTime) / 1000).toFixed(1);
+                    console.log(`✅ Tab returned after ${duration}s`);
+                    
+                    // Send return event to backend
+                    fetch('/tab_switch', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            action: 'visible',
+                            duration: duration,
+                            timestamp: new Date().toISOString()
+                        })
+                    });
+                    tabSwitchStartTime = null;
+                }
+            }
+        });
+        
+        // Window focus/blur detection
+        window.addEventListener('blur', function() {
+            windowBlurCount++;
+            console.log('⚠️ Window lost focus');
+            
+            fetch('/window_focus', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    action: 'blur',
+                    timestamp: new Date().toISOString()
+                })
+            });
+        });
+        
+        window.addEventListener('focus', function() {
+            console.log('✅ Window gained focus');
+            
+            fetch('/window_focus', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    action: 'focus',
+                    timestamp: new Date().toISOString()
+                })
+            });
+        });
+        
+        // Fullscreen exit detection
+        document.addEventListener('fullscreenchange', function() {
+            if (!document.fullscreenElement) {
+                console.log('⚠️ Exited fullscreen');
+                fetch('/fullscreen_exit', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        timestamp: new Date().toISOString()
+                    })
+                });
+            }
+        });
+        
+        // Window resize detection (catches minimize)
+        let lastWindowState = {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            outerWidth: window.outerWidth,
+            outerHeight: window.outerHeight
+        };
+        
+        window.addEventListener('resize', function() {
+            const currentState = {
+                width: window.innerWidth,
+                height: window.innerHeight,
+                outerWidth: window.outerWidth,
+                outerHeight: window.outerHeight
+            };
+            
+            // Detect significant resize (possible minimize or window manipulation)
+            const widthChange = Math.abs(currentState.width - lastWindowState.width);
+            const heightChange = Math.abs(currentState.height - lastWindowState.height);
+            
+            if (widthChange > 100 || heightChange > 100) {
+                console.log('⚠️ Window resized significantly');
+                fetch('/window_resize', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        timestamp: new Date().toISOString(),
+                        oldSize: lastWindowState,
+                        newSize: currentState
+                    })
+                });
+            }
+            
+            lastWindowState = currentState;
+        });
         
         // Update every 500ms
         setInterval(updateStatus, 500);
