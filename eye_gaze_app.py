@@ -7,13 +7,15 @@ Flags when user looks away from the screen.
 
 from flask import Flask, render_template, Response, jsonify
 import cv2
-import dlib
 import numpy as np
 import time
 import os
 from datetime import datetime
 from collections import deque
 from ultralytics import YOLO
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 app = Flask(__name__)
 
@@ -42,9 +44,8 @@ FLAG_COOLDOWN = 3.0  # seconds between flags
 calibration_samples = []
 CALIBRATION_FRAMES = 30  # frames to average for calibration
 
-# Load dlib models
-detector = None
-predictor = None
+# Load models
+face_landmarker = None
 yolo_model = None
 
 # Phone detection config
@@ -53,25 +54,27 @@ PHONE_CONFIDENCE_THRESHOLD = 0.5
 last_phone_flag_time = 0
 
 def init_models():
-    """Initialize dlib face detector, landmark predictor, and YOLO model."""
-    global detector, predictor, yolo_model
+    """Initialize MediaPipe face landmarker and YOLO."""
+    global face_landmarker, yolo_model
     
-    detector = dlib.get_frontal_face_detector()
-    
-    # Check for the shape predictor file
-    predictor_path = 'shape_predictor_68_face_landmarks.dat'
-    
-    if not os.path.exists(predictor_path):
-        print(f"ERROR: {predictor_path} not found!")
-        print("Download it from: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
-        print("Then extract it with: bzip2 -d shape_predictor_68_face_landmarks.dat.bz2")
-        return False
-    
-    predictor = dlib.shape_predictor(predictor_path)
+    # Initialize MediaPipe Face Landmarker
+    print("Loading MediaPipe Face Landmarker...")
+    base_options = python.BaseOptions(model_asset_path='face_landmarker.task')
+    options = vision.FaceLandmarkerOptions(
+        base_options=base_options,
+        output_face_blendshapes=False,
+        output_facial_transformation_matrixes=False,
+        num_faces=1,
+        min_face_detection_confidence=0.5,
+        min_face_presence_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    face_landmarker = vision.FaceLandmarker.create_from_options(options)
+    print("✅ MediaPipe Face Landmarker loaded")
     
     # Load YOLO model for phone detection
     print("Loading YOLO model for phone detection...")
-    yolo_model = YOLO('yolov8n.pt')  # nano model for speed
+    yolo_model = YOLO('yolov8n.pt')
     print("✅ YOLO model loaded")
     
     return True
@@ -103,15 +106,26 @@ def detect_phone(frame):
     return phone_detected, phone_box
 
 
-def get_eye_region(landmarks, eye_points):
-    """Extract eye region coordinates."""
-    pts = np.array([[landmarks.part(n).x, landmarks.part(n).y] for n in eye_points])
+# MediaPipe landmark indices for eyes
+LEFT_EYE_INDICES = [33, 160, 158, 133, 153, 144]
+RIGHT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
+LEFT_IRIS_INDICES = [468, 469, 470, 471, 472]
+RIGHT_IRIS_INDICES = [473, 474, 475, 476, 477]
+
+
+def get_eye_region(landmarks, eye_indices, img_shape):
+    """Extract eye region coordinates from MediaPipe landmarks."""
+    h, w = img_shape[:2]
+    pts = np.array([[int(landmarks[i].x * w), int(landmarks[i].y * h)] for i in eye_indices])
     return pts
 
 
-def get_gaze_ratio(eye_points, gray, landmarks):
-    """Calculate gaze ratio to determine eye direction."""
-    eye_region = get_eye_region(landmarks, eye_points)
+def get_gaze_ratio(eye_indices, iris_indices, gray, landmarks, img_shape):
+    """Calculate gaze ratio using MediaPipe iris landmarks."""
+    h, w = img_shape[:2]
+    
+    # Get eye region
+    eye_region = get_eye_region(landmarks, eye_indices, img_shape)
     
     # Get bounding box
     min_x = np.min(eye_region[:, 0])
@@ -122,52 +136,50 @@ def get_gaze_ratio(eye_points, gray, landmarks):
     # Add padding
     padding = 5
     min_x = max(0, min_x - padding)
-    max_x = min(gray.shape[1], max_x + padding)
+    max_x = min(w, max_x + padding)
     min_y = max(0, min_y - padding)
-    max_y = min(gray.shape[0], max_y + padding)
+    max_y = min(h, max_y + padding)
     
     eye = gray[min_y:max_y, min_x:max_x]
     
     if eye.size == 0:
         return 1.0, "unknown"
     
-    # Apply threshold to find pupil
-    _, threshold = cv2.threshold(eye, 70, 255, cv2.THRESH_BINARY)
+    # Get iris center
+    iris_x = int(landmarks[iris_indices[0]].x * w)
+    eye_center_x = (min_x + max_x) // 2
+    eye_width = max_x - min_x
     
-    height, width = threshold.shape
-    left_side = threshold[:, :width // 2]
-    right_side = threshold[:, width // 2:]
+    if eye_width == 0:
+        return 1.0, "center"
     
-    left_white = cv2.countNonZero(left_side)
-    right_white = cv2.countNonZero(right_side)
-    
-    # Calculate ratio
-    if right_white == 0:
-        gaze_ratio = 1.0
-    else:
-        gaze_ratio = left_white / right_white
+    # Calculate relative position (-1 = far left, 0 = center, 1 = far right)
+    relative_pos = (iris_x - eye_center_x) / (eye_width / 2)
     
     # Determine direction
-    if gaze_ratio < 0.7:
-        direction = "right"
-    elif gaze_ratio > 1.3:
+    if relative_pos < -0.15:
         direction = "left"
+    elif relative_pos > 0.15:
+        direction = "right"
     else:
         direction = "center"
     
-    return gaze_ratio, direction
+    return relative_pos, direction
 
 
-def get_head_pose(landmarks, img_size):
-    """Estimate head pose to detect if looking away."""
-    # 2D image points
+def get_head_pose(landmarks, img_shape):
+    """Estimate head pose using MediaPipe landmarks."""
+    h, w = img_shape[:2]
+    
+    # MediaPipe face landmark indices
+    # 1: Nose tip, 152: Chin, 33: Left eye, 263: Right eye, 61: Left mouth, 291: Right mouth
     image_points = np.array([
-        (landmarks.part(30).x, landmarks.part(30).y),     # Nose tip
-        (landmarks.part(8).x, landmarks.part(8).y),       # Chin
-        (landmarks.part(36).x, landmarks.part(36).y),     # Left eye left corner
-        (landmarks.part(45).x, landmarks.part(45).y),     # Right eye right corner
-        (landmarks.part(48).x, landmarks.part(48).y),     # Left mouth corner
-        (landmarks.part(54).x, landmarks.part(54).y)      # Right mouth corner
+        (landmarks[1].x * w, landmarks[1].y * h),      # Nose tip
+        (landmarks[152].x * w, landmarks[152].y * h),  # Chin
+        (landmarks[33].x * w, landmarks[33].y * h),    # Left eye left corner
+        (landmarks[263].x * w, landmarks[263].y * h),  # Right eye right corner
+        (landmarks[61].x * w, landmarks[61].y * h),    # Left mouth corner
+        (landmarks[291].x * w, landmarks[291].y * h)   # Right mouth corner
     ], dtype="double")
     
     # 3D model points
@@ -181,8 +193,8 @@ def get_head_pose(landmarks, img_size):
     ])
     
     # Camera internals
-    focal_length = img_size[1]
-    center = (img_size[1] / 2, img_size[0] / 2)
+    focal_length = w
+    center = (w / 2, h / 2)
     camera_matrix = np.array([
         [focal_length, 0, center[0]],
         [0, focal_length, center[1]],
@@ -252,7 +264,7 @@ def generate_frames():
     """Generate video frames with gaze detection overlay."""
     global gaze_state, looking_away_start, last_flag_time, calibration_samples, last_phone_flag_time
     
-    if detector is None or predictor is None:
+    if face_landmarker is None:
         if not init_models():
             return
     
@@ -272,6 +284,8 @@ def generate_frames():
         # Flip frame horizontally for mirror effect
         frame = cv2.flip(frame, 1)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Convert to RGB for MediaPipe
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
         current_time = time.time()
         frame_count += 1
@@ -300,10 +314,11 @@ def generate_frames():
                     gaze_state['phone_flags'] += 1
                     last_phone_flag_time = current_time
         
-        # Detect faces
-        faces = detector(gray)
+        # Process with MediaPipe tasks API
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        detection_result = face_landmarker.detect(mp_image)
         
-        if len(faces) == 0:
+        if not detection_result.face_landmarks:
             # No face detected
             gaze_state['status'] = 'no_face'
             gaze_state['direction'] = 'unknown'
@@ -316,15 +331,12 @@ def generate_frames():
             if looking_away_start is None:
                 looking_away_start = current_time
         else:
-            face = faces[0]
-            landmarks = predictor(gray, face)
+            # Get first face landmarks (list of NormalizedLandmark objects)
+            landmarks = detection_result.face_landmarks[0]
             
-            # Get eye gaze
-            left_eye_points = range(36, 42)
-            right_eye_points = range(42, 48)
-            
-            _, left_dir = get_gaze_ratio(left_eye_points, gray, landmarks)
-            _, right_dir = get_gaze_ratio(right_eye_points, gray, landmarks)
+            # Get eye gaze using iris landmarks
+            _, left_dir = get_gaze_ratio(LEFT_EYE_INDICES, LEFT_IRIS_INDICES, gray, landmarks, frame.shape)
+            _, right_dir = get_gaze_ratio(RIGHT_EYE_INDICES, RIGHT_IRIS_INDICES, gray, landmarks, frame.shape)
             
             # Get head pose
             pitch, yaw, roll = get_head_pose(landmarks, frame.shape)
@@ -358,16 +370,27 @@ def generate_frames():
                 gaze_state['direction'] = reason
                 gaze_state['is_looking_away'] = not is_looking
                 
-                # Draw face rectangle
-                x, y, w, h = face.left(), face.top(), face.width(), face.height()
+                # Draw face bounding box
+                h, w = frame.shape[:2]
+                face_points = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]]
+                x_coords = [p[0] for p in face_points]
+                y_coords = [p[1] for p in face_points]
+                x_min, x_max = min(x_coords), max(x_coords)
+                y_min, y_max = min(y_coords), max(y_coords)
                 color = (0, 255, 0) if is_looking else (0, 0, 255)
-                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, 2)
                 
                 # Draw eye landmarks
-                for n in range(36, 48):
-                    x_pt = landmarks.part(n).x
-                    y_pt = landmarks.part(n).y
+                for idx in LEFT_EYE_INDICES + RIGHT_EYE_INDICES:
+                    x_pt = int(landmarks[idx].x * w)
+                    y_pt = int(landmarks[idx].y * h)
                     cv2.circle(frame, (x_pt, y_pt), 2, (255, 255, 0), -1)
+                
+                # Draw iris landmarks
+                for idx in LEFT_IRIS_INDICES + RIGHT_IRIS_INDICES:
+                    x_pt = int(landmarks[idx].x * w)
+                    y_pt = int(landmarks[idx].y * h)
+                    cv2.circle(frame, (x_pt, y_pt), 2, (0, 255, 255), -1)
                 
                 # Draw status
                 status_text = reason
