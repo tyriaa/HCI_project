@@ -160,6 +160,50 @@
                             <span class="text-gray-400">Tab Status:</span>
                             <span id="tab-status" class="font-medium text-green-400">✅ Visible</span>
                         </div>
+                        
+                        <div class="border-t border-gray-600 my-3"></div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">✋ Hands Detected:</span>
+                            <span id="hands-detected" class="font-medium text-blue-400">0</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Left Hand:</span>
+                            <span id="left-hand-status" class="font-medium text-gray-400">❌</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Right Hand:</span>
+                            <span id="right-hand-status" class="font-medium text-gray-400">❌</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Gesture:</span>
+                            <span id="hand-gesture" class="font-medium text-cyan-400">none</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Holding Object:</span>
+                            <span id="holding-object" class="font-medium text-green-400">❌ No</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Hand Flags:</span>
+                            <span id="hand-flags" class="font-bold text-purple-400">0</span>
+                        </div>
+                        
+                        <div class="border-t border-gray-600 my-3"></div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">⚠️ Behaviors:</span>
+                            <span id="suspicious-behaviors" class="font-medium text-orange-400">None</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Behavior Flags:</span>
+                            <span id="behavior-flags" class="font-bold text-orange-400">0</span>
+                        </div>
                     </div>
                 </div>
                 
@@ -270,6 +314,74 @@
                         tabStatus.classList.add('text-red-400');
                         tabStatus.classList.remove('text-green-400');
                     }
+                    
+                    // Update hand detection stats
+                    document.getElementById('hands-detected').textContent = data.hands_detected || 0;
+                    document.getElementById('hand-flags').textContent = data.hand_flags || 0;
+                    
+                    // Update left hand status
+                    const leftHandStatus = document.getElementById('left-hand-status');
+                    if (data.left_hand_visible) {
+                        const leftFingers = data.fingers_extended?.left || [];
+                        const fingerEmojis = ['👍', '☝️', '🖕', '💍', '🤙'];
+                        const extended = leftFingers.map((ext, i) => ext ? fingerEmojis[i] : '').filter(e => e).join(' ');
+                        leftHandStatus.textContent = `✅ ${extended || '✊'}`;
+                        leftHandStatus.classList.add('text-green-400');
+                        leftHandStatus.classList.remove('text-gray-400');
+                    } else {
+                        leftHandStatus.textContent = '❌';
+                        leftHandStatus.classList.add('text-gray-400');
+                        leftHandStatus.classList.remove('text-green-400');
+                    }
+                    
+                    // Update right hand status
+                    const rightHandStatus = document.getElementById('right-hand-status');
+                    if (data.right_hand_visible) {
+                        const rightFingers = data.fingers_extended?.right || [];
+                        const fingerEmojis = ['👍', '☝️', '🖕', '💍', '🤙'];
+                        const extended = rightFingers.map((ext, i) => ext ? fingerEmojis[i] : '').filter(e => e).join(' ');
+                        rightHandStatus.textContent = `✅ ${extended || '✊'}`;
+                        rightHandStatus.classList.add('text-green-400');
+                        rightHandStatus.classList.remove('text-gray-400');
+                    } else {
+                        rightHandStatus.textContent = '❌';
+                        rightHandStatus.classList.add('text-gray-400');
+                        rightHandStatus.classList.remove('text-green-400');
+                    }
+                    
+                    // Update gesture
+                    document.getElementById('hand-gesture').textContent = data.hand_gesture || 'none';
+                    
+                    // Update holding object status
+                    const holdingObject = document.getElementById('holding-object');
+                    if (data.hand_holding_object) {
+                        holdingObject.textContent = '🚨 YES!';
+                        holdingObject.classList.add('text-red-400');
+                        holdingObject.classList.remove('text-green-400');
+                    } else {
+                        holdingObject.textContent = '❌ No';
+                        holdingObject.classList.add('text-green-400');
+                        holdingObject.classList.remove('text-red-400');
+                    }
+                    
+                    // Update suspicious behaviors
+                    const behaviorsElement = document.getElementById('suspicious-behaviors');
+                    if (data.suspicious_behaviors && data.suspicious_behaviors.length > 0) {
+                        const behaviorText = data.suspicious_behaviors
+                            .map(b => b.replace(/_/g, ' '))
+                            .map(b => b.charAt(0).toUpperCase() + b.slice(1))
+                            .join(', ');
+                        behaviorsElement.textContent = behaviorText;
+                        behaviorsElement.classList.add('text-red-400');
+                        behaviorsElement.classList.remove('text-orange-400');
+                    } else {
+                        behaviorsElement.textContent = 'None';
+                        behaviorsElement.classList.add('text-orange-400');
+                        behaviorsElement.classList.remove('text-red-400');
+                    }
+                    
+                    // Update behavior flags
+                    document.getElementById('behavior-flags').textContent = data.behavior_flags || 0;
                     
                     // Update overlay status
                     const overlay = document.getElementById('overlay-status');
