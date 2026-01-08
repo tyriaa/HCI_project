@@ -3,323 +3,327 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Eye Gaze Detection - Screen Focus Monitor</title>
+    <title>Focus Monitor Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: { 900: '#0a0a0f', 800: '#12121a', 700: '#1a1a24', 600: '#22222e' },
+                        accent: { primary: '#6366f1', secondary: '#8b5cf6', success: '#10b981', warning: '#f59e0b', danger: '#ef4444' }
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-            min-height: 100vh;
-        }
+        * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; padding: 0; }
+        body { background: #0a0a0f; overflow: hidden; }
         
-        .video-container {
-            position: relative;
-            border-radius: 16px;
-            overflow: hidden;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-        }
+        /* Glassmorphism */
+        .glass { background: rgba(255,255,255,0.03); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); }
         
-        .status-badge {
-            animation: pulse 2s infinite;
-        }
+        /* Video container */
+        .video-wrapper { position: relative; border-radius: 16px; overflow: hidden; box-shadow: 0 0 40px rgba(99,102,241,0.15); }
+        .video-wrapper::before { content: ''; position: absolute; inset: 0; border-radius: 16px; padding: 1px; background: linear-gradient(135deg, rgba(99,102,241,0.4), transparent, rgba(139,92,246,0.4)); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; pointer-events: none; z-index: 10; }
         
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
-        }
+        /* Status dot */
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; animation: pulse-dot 2s infinite; }
+        .status-dot.active { background: #10b981; box-shadow: 0 0 12px rgba(16,185,129,0.6); }
+        .status-dot.warning { background: #f59e0b; box-shadow: 0 0 12px rgba(245,158,11,0.6); }
+        .status-dot.danger { background: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.6); }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
         
-        .flag-alert {
-            animation: shake 0.5s ease-in-out;
-        }
+        /* Progress ring */
+        .progress-ring { transform: rotate(-90deg); }
+        .progress-ring-circle { transition: stroke-dashoffset 0.4s ease; }
         
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            25% { transform: translateX(-5px); }
-            75% { transform: translateX(5px); }
-        }
+        /* Animations */
+        @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+        .animate-slideIn { animation: slideIn 0.3s ease-out; }
         
-        .glass-card {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-        }
+        /* Gradient text */
+        .gradient-text { background: linear-gradient(135deg, #6366f1, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
         
-        .looking-good {
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-        }
+        /* Glow effects */
+        .glow-success { box-shadow: 0 0 20px rgba(16,185,129,0.25); }
+        .glow-danger { box-shadow: 0 0 20px rgba(239,68,68,0.25); }
+        .glow-warning { box-shadow: 0 0 20px rgba(245,158,11,0.25); }
         
-        .looking-away {
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-        }
-        
-        .no-face {
-            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-        }
-        
-        .flag-item {
-            animation: slideIn 0.3s ease-out;
-        }
-        
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateX(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateX(0);
-            }
-        }
+        /* Compact scrollbar */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
     </style>
 </head>
-<body class="text-white">
-    <div class="container mx-auto px-4 py-8">
-        <!-- Header -->
-        <header class="text-center mb-8">
-            <h1 class="text-4xl font-bold mb-2">
-                <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
-                    👁️ Eye Gaze Detection
-                </span>
-            </h1>
-            <p class="text-gray-400">Real-time screen focus monitoring</p>
+<body class="text-white h-full">
+    <!-- Background -->
+    <div class="fixed inset-0 bg-gradient-to-br from-indigo-900/10 via-transparent to-purple-900/10 pointer-events-none"></div>
+    
+    <div class="relative h-full flex flex-col p-3">
+        <!-- Compact Header -->
+        <header class="flex items-center justify-between mb-3 flex-shrink-0">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold gradient-text">Focus Monitor Pro</h1>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <div class="flex items-center gap-1.5 px-2 py-1 rounded-full glass text-xs">
+                    <div class="status-dot active"></div>
+                    <span class="text-gray-400">Live</span>
+                </div>
+                <button onclick="resetFlags()" class="px-2 py-1 text-xs rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30">Reset</button>
+                <button onclick="recalibrate()" class="px-2 py-1 text-xs rounded-lg bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30">Calibrate</button>
+            </div>
         </header>
         
-        <!-- Main Content -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <!-- Video Feed -->
-            <div class="lg:col-span-2">
-                <div class="video-container">
-                    <img id="video-feed" src="/video_feed" alt="Video Feed" 
-                         class="w-full rounded-2xl">
+        <!-- Main Content - Fills remaining space -->
+        <div class="flex-1 grid grid-cols-12 gap-3 min-h-0">
+            <!-- Left: Video + Stats below -->
+            <div class="col-span-8 flex flex-col gap-3 min-h-0">
+                <!-- Video Feed -->
+                <div class="video-wrapper flex-1 min-h-0">
+                    <img id="video-feed" src="/video_feed" alt="Video Feed" class="w-full h-full object-contain bg-black">
                     
-                    <!-- Overlay Status -->
-                    <div id="overlay-status" class="absolute top-4 left-4 px-4 py-2 rounded-full text-white font-semibold status-badge looking-good">
-                        <span id="status-icon">✅</span>
-                        <span id="status-text">Initializing...</span>
+                    <!-- Status Badge -->
+                    <div id="overlay-status" class="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-lg glass glow-success">
+                        <div id="status-dot" class="status-dot active"></div>
+                        <span id="status-text" class="text-xs font-medium">Initializing...</span>
+                    </div>
+                    
+                    <!-- Attention Ring -->
+                    <div class="absolute top-3 right-3 glass rounded-lg p-2">
+                        <div class="relative w-12 h-12">
+                            <svg class="progress-ring w-12 h-12" viewBox="0 0 44 44">
+                                <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="3"/>
+                                <circle id="attention-ring" class="progress-ring-circle" cx="22" cy="22" r="18" fill="none" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="0"/>
+                            </svg>
+                            <div class="absolute inset-0 flex items-center justify-center">
+                                <span id="attention-score-overlay" class="text-sm font-bold">100</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Bottom Bar -->
+                    <div class="absolute bottom-0 left-0 right-0 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent">
+                        <div class="flex items-center justify-between text-xs">
+                            <div class="flex items-center gap-3">
+                                <span><span class="text-gray-500">Dir:</span> <span id="direction-overlay" class="text-green-400 font-medium">Center</span></span>
+                                <span><span class="text-gray-500">Face:</span> <span id="facing-overlay" class="font-medium">100%</span></span>
+                                <span><span class="text-gray-500">Iris:</span> <span id="iris-position" class="text-cyan-400 font-medium">Center</span></span>
+                            </div>
+                            <div id="flags-badge" class="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/20 border border-red-500/30 hidden">
+                                <span class="text-red-400 font-medium" id="flags-count-overlay">0</span>
+                                <span class="text-gray-500">flags</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
-                <!-- Instructions -->
-                <div class="glass-card rounded-xl p-4 mt-4">
-                    <h3 class="font-semibold text-lg mb-2">📋 Instructions</h3>
-                    <ul class="text-gray-300 text-sm space-y-1">
-                        <li>• Keep your face visible in the camera</li>
-                        <li>• Look directly at the screen to avoid flags</li>
-                        <li>• Looking away for more than 1.5 seconds will trigger a flag</li>
-                        <li>• Head movements and eye gaze are both tracked</li>
-                    </ul>
+                <!-- Bottom Stats Row -->
+                <div class="grid grid-cols-8 gap-2 flex-shrink-0">
+                    <div class="glass rounded-lg p-2 text-center">
+                        <p class="text-xs text-gray-500">Eyes</p>
+                        <p id="eye-openness" class="text-sm font-semibold text-green-400">100%</p>
+                    </div>
+                    <div class="glass rounded-lg p-2 text-center">
+                        <p class="text-xs text-gray-500">Blinks</p>
+                        <p id="blink-count" class="text-sm font-semibold text-blue-400">0</p>
+                    </div>
+                    <div class="glass rounded-lg p-2 text-center">
+                        <p class="text-xs text-gray-500">Away</p>
+                        <p id="looking-away-duration" class="text-sm font-semibold text-purple-400">0.0s</p>
+                    </div>
+                    <div class="glass rounded-lg p-2 text-center">
+                        <p class="text-xs text-gray-500">Roll</p>
+                        <p id="head-roll" class="text-sm font-semibold text-purple-400">0°</p>
+                    </div>
+                    <div class="glass rounded-lg p-2 text-center">
+                        <p class="text-xs text-gray-500">Tabs</p>
+                        <p id="tab-switches" class="text-sm font-semibold text-yellow-400">0</p>
+                    </div>
+                    <div class="glass rounded-lg p-2 text-center">
+                        <p class="text-xs text-gray-500">Blurs</p>
+                        <p id="window-blurs" class="text-sm font-semibold text-yellow-400">0</p>
+                    </div>
+                    <div class="glass rounded-lg p-2 text-center">
+                        <p class="text-xs text-gray-500">Mouth</p>
+                        <p id="mouth-activity" class="text-sm font-semibold text-pink-400">0%</p>
+                    </div>
+                    <div class="glass rounded-lg p-2 text-center">
+                        <p class="text-xs text-gray-500">Tab</p>
+                        <p id="tab-status" class="text-sm font-semibold text-green-400">OK</p>
+                    </div>
                 </div>
             </div>
             
-            <!-- Stats Panel -->
-            <div class="space-y-4">
-                <!-- Current Status Card -->
-                <div class="glass-card rounded-xl p-6">
-                    <h3 class="font-semibold text-lg mb-4">📊 Current Status</h3>
-                    
-                    <div class="space-y-4">
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Direction:</span>
-                            <span id="direction" class="font-medium">-</span>
+            <!-- Right Sidebar -->
+            <div class="col-span-4 flex flex-col gap-3 min-h-0 overflow-y-auto">
+                <!-- Attention Score -->
+                <div class="glass rounded-xl p-3 flex-shrink-0">
+                    <div class="flex items-center gap-3">
+                        <div class="relative flex-shrink-0">
+                            <svg class="progress-ring w-16 h-16" viewBox="0 0 60 60">
+                                <circle cx="30" cy="30" r="26" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="4"/>
+                                <circle id="attention-ring-main" class="progress-ring-circle" cx="30" cy="30" r="26" fill="none" stroke="url(#gradient)" stroke-width="4" stroke-linecap="round" stroke-dasharray="163.4" stroke-dashoffset="0"/>
+                                <defs>
+                                    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                        <stop offset="0%" stop-color="#10b981"/>
+                                        <stop offset="100%" stop-color="#6366f1"/>
+                                    </linearGradient>
+                                </defs>
+                            </svg>
+                            <div class="absolute inset-0 flex items-center justify-center">
+                                <span id="attention-score" class="text-xl font-bold">100</span>
+                            </div>
                         </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Looking Away:</span>
-                            <span id="looking-away-duration" class="font-medium">0.0s</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">📱 Phone:</span>
-                            <span id="phone-status" class="font-medium">-</span>
-                        </div>
-                        
-                        <div class="border-t border-gray-600 my-3"></div>
-                        <h4 class="text-sm font-semibold text-cyan-400 mb-2">👁️ Eye Tracking</h4>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Eye Openness:</span>
-                            <span id="eye-openness" class="font-medium text-cyan-400">100%</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Blink Count:</span>
-                            <span id="blink-count" class="font-medium text-cyan-400">0</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Iris Position:</span>
-                            <span id="iris-position" class="font-medium text-cyan-400">Center</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Head Roll:</span>
-                            <span id="head-roll" class="font-medium text-cyan-400">0°</span>
-                        </div>
-                        
-                        <div class="border-t border-gray-600 my-3"></div>
-                        <h4 class="text-sm font-semibold text-purple-400 mb-2">🎯 Attention Monitoring</h4>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Attention Score:</span>
-                            <span id="attention-score" class="font-bold text-lg text-purple-400">100%</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Status:</span>
-                            <span id="attention-status" class="font-medium text-green-400">Attentive</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Facing Camera:</span>
-                            <span id="facing-score" class="font-medium text-purple-400">100%</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Occlusion:</span>
-                            <span id="occlusion-status" class="font-medium text-green-400">None</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Mouth Activity:</span>
-                            <span id="mouth-activity" class="font-medium text-purple-400">0%</span>
-                        </div>
-                        
-                        <div class="border-t border-gray-600 my-3"></div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Total Flags:</span>
-                            <span id="total-flags" class="font-bold text-2xl text-red-400">0</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Phone Flags:</span>
-                            <span id="phone-flags" class="font-bold text-orange-400">0</span>
-                        </div>
-                        
-                        <div class="border-t border-gray-600 my-3"></div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">🔄 Tab Switches:</span>
-                            <span id="tab-switches" class="font-medium text-yellow-400">0</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">🪟 Window Blurs:</span>
-                            <span id="window-blurs" class="font-medium text-yellow-400">0</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Tab Status:</span>
-                            <span id="tab-status" class="font-medium text-green-400">✅ Visible</span>
-                        </div>
-                        
-                        <div class="border-t border-gray-600 my-3"></div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">✋ Hands Detected:</span>
-                            <span id="hands-detected" class="font-medium text-blue-400">0</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Left Hand:</span>
-                            <span id="left-hand-status" class="font-medium text-gray-400">❌</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Right Hand:</span>
-                            <span id="right-hand-status" class="font-medium text-gray-400">❌</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Gesture:</span>
-                            <span id="hand-gesture" class="font-medium text-cyan-400">none</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Holding Object:</span>
-                            <span id="holding-object" class="font-medium text-green-400">❌ No</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Hand Flags:</span>
-                            <span id="hand-flags" class="font-bold text-purple-400">0</span>
-                        </div>
-                        
-                        <div class="border-t border-gray-600 my-3"></div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">⚠️ Behaviors:</span>
-                            <span id="suspicious-behaviors" class="font-medium text-orange-400">None</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Behavior Flags:</span>
-                            <span id="behavior-flags" class="font-bold text-orange-400">0</span>
-                        </div>
-                        
-                        <div class="border-t border-gray-600 my-3"></div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">😊 Emotion:</span>
-                            <span id="emotion" class="font-medium text-pink-400">unknown</span>
-                        </div>
-                        
-                        <div class="flex justify-between items-center">
-                            <span class="text-gray-400">Confidence:</span>
-                            <span id="emotion-confidence" class="font-medium text-pink-400">0%</span>
+                        <div class="flex-1">
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="text-xs text-gray-500 uppercase">Attention</span>
+                                <span id="attention-status" class="px-1.5 py-0.5 text-xs rounded bg-green-500/20 text-green-400">Attentive</span>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2 mt-2">
+                                <div class="text-center p-1.5 rounded bg-white/5">
+                                    <p class="text-xs text-gray-500">Facing</p>
+                                    <p id="facing-score" class="text-sm font-semibold text-indigo-400">100%</p>
+                                </div>
+                                <div class="text-center p-1.5 rounded bg-white/5">
+                                    <p class="text-xs text-gray-500">Direction</p>
+                                    <p id="direction" class="text-sm font-semibold text-green-400">Center</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
                 
-                <!-- Flag Counter -->
-                <div id="flag-counter" class="glass-card rounded-xl p-6">
-                    <div class="flex justify-between items-center mb-4">
-                        <h3 class="font-semibold text-lg">🚩 Flag History</h3>
-                        <button onclick="resetFlags()" 
-                                class="px-3 py-1 bg-red-500 hover:bg-red-600 rounded-lg text-sm transition-colors">
-                            Reset
-                        </button>
-                    </div>
-                    
-                    <div id="flag-list" class="space-y-2 max-h-64 overflow-y-auto">
-                        <p class="text-gray-500 text-sm">No flags yet. Keep looking at the screen!</p>
+                <!-- Emotion Detection -->
+                <div class="glass rounded-xl p-3 flex-shrink-0">
+                    <h3 class="text-xs text-gray-500 uppercase mb-2">Emotion</h3>
+                    <div class="flex items-center gap-3">
+                        <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-pink-500/20 to-purple-500/20 flex items-center justify-center text-2xl" id="emotion-emoji">😐</div>
+                        <div class="flex-1">
+                            <p id="emotion-name" class="text-sm font-semibold text-pink-400">Neutral</p>
+                            <div class="flex items-center gap-2 mt-1">
+                                <div class="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                                    <div id="emotion-bar" class="h-full bg-gradient-to-r from-pink-500 to-purple-500 rounded-full transition-all" style="width: 0%"></div>
+                                </div>
+                                <span id="emotion-confidence" class="text-xs text-gray-500">0%</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
-                <!-- Calibration Card -->
-                <div class="glass-card rounded-xl p-6">
-                    <h3 class="font-semibold text-lg mb-3">🎯 Calibration</h3>
-                    <p class="text-gray-300 text-sm mb-3">
-                        Si la détection est incorrecte, recalibrez en regardant l'écran normalement.
-                    </p>
-                    <div class="flex justify-between items-center mb-2">
-                        <span class="text-gray-400 text-sm">Pitch offset:</span>
-                        <span id="pitch-offset" class="font-mono text-sm">0.0°</span>
+                <!-- Detection Grid -->
+                <div class="glass rounded-xl p-3 flex-shrink-0">
+                    <h3 class="text-xs text-gray-500 uppercase mb-2">Detection</h3>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div class="flex items-center justify-between p-2 rounded bg-white/5">
+                            <span class="text-xs text-gray-400">Phone</span>
+                            <span id="phone-status" class="text-xs font-medium text-green-400">None</span>
+                        </div>
+                        <div class="flex items-center justify-between p-2 rounded bg-white/5">
+                            <span class="text-xs text-gray-400">Occlusion</span>
+                            <span id="occlusion-status" class="text-xs font-medium text-green-400">None</span>
+                        </div>
+                        <div class="flex items-center justify-between p-2 rounded bg-white/5">
+                            <span class="text-xs text-gray-400">Holding</span>
+                            <span id="holding-object" class="text-xs font-medium text-green-400">No</span>
+                        </div>
+                        <div class="flex items-center justify-between p-2 rounded bg-white/5">
+                            <span class="text-xs text-gray-400">Gesture</span>
+                            <span id="hand-gesture" class="text-xs font-medium text-cyan-400">none</span>
+                        </div>
                     </div>
-                    <div class="flex justify-between items-center mb-3">
-                        <span class="text-gray-400 text-sm">Status:</span>
-                        <span id="calibration-status" class="text-sm">-</span>
-                    </div>
-                    <button onclick="recalibrate()" 
-                            class="w-full px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg text-sm transition-colors font-medium">
-                        🔄 Recalibrer
-                    </button>
                 </div>
                 
-                <!-- Tips Card -->
-                <div class="glass-card rounded-xl p-6">
-                    <h3 class="font-semibold text-lg mb-3">💡 Tips</h3>
-                    <ul class="text-gray-300 text-sm space-y-2">
-                        <li>🔆 Ensure good lighting on your face</li>
-                        <li>📏 Sit at a comfortable distance</li>
-                        <li>🎯 Position camera at eye level</li>
-                        <li>👓 Remove glasses if causing issues</li>
-                    </ul>
+                <!-- Hands -->
+                <div class="glass rounded-xl p-3 flex-shrink-0">
+                    <h3 class="text-xs text-gray-500 uppercase mb-2">Hands</h3>
+                    <div class="grid grid-cols-3 gap-2">
+                        <div class="text-center p-2 rounded bg-white/5">
+                            <span class="text-lg">🤚</span>
+                            <p id="left-hand-status" class="text-xs text-gray-400 mt-1">Hidden</p>
+                        </div>
+                        <div class="text-center p-2 rounded bg-white/5">
+                            <span class="text-lg">✋</span>
+                            <p id="right-hand-status" class="text-xs text-gray-400 mt-1">Hidden</p>
+                        </div>
+                        <div class="text-center p-2 rounded bg-white/5">
+                            <p class="text-xs text-gray-500">Count</p>
+                            <p id="hands-detected" class="text-lg font-bold text-blue-400">0</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Flags Grid -->
+                <div class="glass rounded-xl p-3 flex-shrink-0">
+                    <h3 class="text-xs text-gray-500 uppercase mb-2">Flags</h3>
+                    <div class="grid grid-cols-4 gap-2">
+                        <div class="text-center p-2 rounded bg-red-500/10 border border-red-500/20">
+                            <p id="total-flags" class="text-lg font-bold text-red-400">0</p>
+                            <p class="text-xs text-gray-500">Total</p>
+                        </div>
+                        <div class="text-center p-2 rounded bg-orange-500/10 border border-orange-500/20">
+                            <p id="phone-flags" class="text-lg font-bold text-orange-400">0</p>
+                            <p class="text-xs text-gray-500">Phone</p>
+                        </div>
+                        <div class="text-center p-2 rounded bg-purple-500/10 border border-purple-500/20">
+                            <p id="hand-flags" class="text-lg font-bold text-purple-400">0</p>
+                            <p class="text-xs text-gray-500">Hand</p>
+                        </div>
+                        <div class="text-center p-2 rounded bg-yellow-500/10 border border-yellow-500/20">
+                            <p id="behavior-flags" class="text-lg font-bold text-yellow-400">0</p>
+                            <p class="text-xs text-gray-500">Behavior</p>
+                        </div>
+                    </div>
+                    <div class="mt-2 p-2 rounded bg-white/5">
+                        <span class="text-xs text-gray-500">Suspicious: </span>
+                        <span id="suspicious-behaviors" class="text-xs text-yellow-400">None</span>
+                    </div>
+                </div>
+                
+                <!-- Calibration -->
+                <div class="glass rounded-xl p-3 flex-shrink-0">
+                    <h3 class="text-xs text-gray-500 uppercase mb-2">Calibration</h3>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <div class="text-center">
+                                <p class="text-xs text-gray-500">Pitch</p>
+                                <p id="pitch-offset" class="text-sm font-mono text-indigo-400">0.0°</p>
+                            </div>
+                            <div class="text-center">
+                                <p class="text-xs text-gray-500">Status</p>
+                                <p id="calibration-status" class="text-sm text-yellow-400">Pending</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Flag History -->
+                <div class="glass rounded-xl p-3 flex-1 min-h-0 flex flex-col">
+                    <h3 class="text-xs text-gray-500 uppercase mb-2 flex-shrink-0">History</h3>
+                    <div id="flag-list" class="flex-1 overflow-y-auto space-y-1">
+                        <p class="text-gray-600 text-xs text-center py-2">No flags</p>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
+    
+    <!-- Alert Sound (optional) -->
+    <audio id="alert-sound" preload="auto">
+        <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2teleQAA" type="audio/wav">
+    </audio>
     
     <script>
         let lastFlagCount = 0;
@@ -366,13 +370,13 @@
                     // Update phone status
                     const phoneStatus = document.getElementById('phone-status');
                     if (data.phone_detected) {
-                        phoneStatus.textContent = '🚨 DETECTED!';
-                        phoneStatus.classList.add('text-orange-400');
+                        phoneStatus.textContent = 'Yes!';
+                        phoneStatus.classList.add('text-red-400');
                         phoneStatus.classList.remove('text-green-400');
                     } else {
-                        phoneStatus.textContent = '✅ None';
+                        phoneStatus.textContent = 'None';
                         phoneStatus.classList.add('text-green-400');
-                        phoneStatus.classList.remove('text-orange-400');
+                        phoneStatus.classList.remove('text-red-400');
                     }
                     
                     // Update phone flags
@@ -381,51 +385,71 @@
                     // Update attention monitoring
                     const attScore = data.attention_score || 100;
                     const attScoreEl = document.getElementById('attention-score');
-                    attScoreEl.textContent = attScore.toFixed(0) + '%';
+                    attScoreEl.textContent = Math.round(attScore);
                     
-                    // Color based on score
-                    if (attScore >= 70) {
-                        attScoreEl.classList.add('text-green-400');
-                        attScoreEl.classList.remove('text-yellow-400', 'text-red-400');
-                    } else if (attScore >= 40) {
-                        attScoreEl.classList.add('text-yellow-400');
-                        attScoreEl.classList.remove('text-green-400', 'text-red-400');
-                    } else {
-                        attScoreEl.classList.add('text-red-400');
-                        attScoreEl.classList.remove('text-green-400', 'text-yellow-400');
+                    // Update circular progress ring (r=26, circumference = 2*PI*26 = 163.4)
+                    const circumference = 163.4;
+                    const offset = circumference - (attScore / 100) * circumference;
+                    const ringEl = document.getElementById('attention-ring-main');
+                    if (ringEl) ringEl.style.strokeDashoffset = offset;
+                    
+                    // Update overlay attention ring too (r=18, circumference = 113.1)
+                    const overlayRing = document.getElementById('attention-ring');
+                    if (overlayRing) {
+                        const overlayCircum = 113.1;
+                        overlayRing.style.strokeDashoffset = overlayCircum - (attScore / 100) * overlayCircum;
                     }
                     
-                    // Update attention status
+                    // Update overlay score
+                    const overlayScore = document.getElementById('attention-score-overlay');
+                    if (overlayScore) overlayScore.textContent = Math.round(attScore);
+                    
+                    // Update attention status badge
                     const attStatus = data.attention_status || 'attentive';
                     const attStatusEl = document.getElementById('attention-status');
                     attStatusEl.textContent = attStatus.charAt(0).toUpperCase() + attStatus.slice(1);
                     
+                    // Update status badge styling
+                    attStatusEl.classList.remove('bg-green-500/20', 'text-green-400', 'bg-yellow-500/20', 'text-yellow-400', 'bg-red-500/20', 'text-red-400');
                     if (attStatus === 'attentive') {
-                        attStatusEl.classList.add('text-green-400');
-                        attStatusEl.classList.remove('text-yellow-400', 'text-red-400');
+                        attStatusEl.classList.add('bg-green-500/20', 'text-green-400');
                     } else if (attStatus === 'distracted') {
-                        attStatusEl.classList.add('text-yellow-400');
-                        attStatusEl.classList.remove('text-green-400', 'text-red-400');
+                        attStatusEl.classList.add('bg-yellow-500/20', 'text-yellow-400');
                     } else {
-                        attStatusEl.classList.add('text-red-400');
-                        attStatusEl.classList.remove('text-green-400', 'text-yellow-400');
+                        attStatusEl.classList.add('bg-red-500/20', 'text-red-400');
                     }
                     
                     // Update facing score
                     const facingScore = data.facing_score || 100;
                     document.getElementById('facing-score').textContent = facingScore.toFixed(0) + '%';
                     
+                    // Update overlay facing
+                    const facingOverlay = document.getElementById('facing-overlay');
+                    if (facingOverlay) facingOverlay.textContent = facingScore.toFixed(0) + '%';
+                    
                     // Update occlusion status
                     const occlusionEl = document.getElementById('occlusion-status');
                     if (data.occlusion_detected) {
-                        occlusionEl.textContent = '⚠️ Detected';
+                        occlusionEl.textContent = 'Yes';
                         occlusionEl.classList.add('text-red-400');
                         occlusionEl.classList.remove('text-green-400');
                     } else {
-                        occlusionEl.textContent = '✅ None';
+                        occlusionEl.textContent = 'None';
                         occlusionEl.classList.add('text-green-400');
                         occlusionEl.classList.remove('text-red-400');
                     }
+                    
+                    // Update emotion detection
+                    const emotionEmojis = {
+                        'happy': '😊', 'sad': '😢', 'angry': '😠', 'surprise': '😲',
+                        'fear': '😨', 'disgust': '🤢', 'neutral': '😐', 'unknown': '❓'
+                    };
+                    const emotion = data.emotion || 'unknown';
+                    const emotionConf = data.emotion_confidence || 0;
+                    document.getElementById('emotion-emoji').textContent = emotionEmojis[emotion] || '😐';
+                    document.getElementById('emotion-name').textContent = emotion.charAt(0).toUpperCase() + emotion.slice(1);
+                    document.getElementById('emotion-confidence').textContent = Math.round(emotionConf) + '%';
+                    document.getElementById('emotion-bar').style.width = emotionConf + '%';
                     
                     // Update mouth activity
                     const mouthActivity = data.mouth_activity || 0;
@@ -438,11 +462,11 @@
                     // Update tab status
                     const tabStatus = document.getElementById('tab-status');
                     if (data.is_tab_visible) {
-                        tabStatus.textContent = '✅ Visible';
+                        tabStatus.textContent = 'OK';
                         tabStatus.classList.add('text-green-400');
                         tabStatus.classList.remove('text-red-400');
                     } else {
-                        tabStatus.textContent = '⚠️ Hidden';
+                        tabStatus.textContent = 'Away';
                         tabStatus.classList.add('text-red-400');
                         tabStatus.classList.remove('text-green-400');
                     }
@@ -454,14 +478,11 @@
                     // Update left hand status
                     const leftHandStatus = document.getElementById('left-hand-status');
                     if (data.left_hand_visible) {
-                        const leftFingers = data.fingers_extended?.left || [];
-                        const fingerEmojis = ['👍', '☝️', '🖕', '💍', '🤙'];
-                        const extended = leftFingers.map((ext, i) => ext ? fingerEmojis[i] : '').filter(e => e).join(' ');
-                        leftHandStatus.textContent = `✅ ${extended || '✊'}`;
+                        leftHandStatus.textContent = 'Visible';
                         leftHandStatus.classList.add('text-green-400');
                         leftHandStatus.classList.remove('text-gray-400');
                     } else {
-                        leftHandStatus.textContent = '❌';
+                        leftHandStatus.textContent = 'Hidden';
                         leftHandStatus.classList.add('text-gray-400');
                         leftHandStatus.classList.remove('text-green-400');
                     }
@@ -469,14 +490,11 @@
                     // Update right hand status
                     const rightHandStatus = document.getElementById('right-hand-status');
                     if (data.right_hand_visible) {
-                        const rightFingers = data.fingers_extended?.right || [];
-                        const fingerEmojis = ['👍', '☝️', '🖕', '💍', '🤙'];
-                        const extended = rightFingers.map((ext, i) => ext ? fingerEmojis[i] : '').filter(e => e).join(' ');
-                        rightHandStatus.textContent = `✅ ${extended || '✊'}`;
+                        rightHandStatus.textContent = 'Visible';
                         rightHandStatus.classList.add('text-green-400');
                         rightHandStatus.classList.remove('text-gray-400');
                     } else {
-                        rightHandStatus.textContent = '❌';
+                        rightHandStatus.textContent = 'Hidden';
                         rightHandStatus.classList.add('text-gray-400');
                         rightHandStatus.classList.remove('text-green-400');
                     }
@@ -512,11 +530,11 @@
                     // Update holding object status
                     const holdingObject = document.getElementById('holding-object');
                     if (data.hand_holding_object) {
-                        holdingObject.textContent = '🚨 YES!';
+                        holdingObject.textContent = 'Yes';
                         holdingObject.classList.add('text-red-400');
                         holdingObject.classList.remove('text-green-400');
                     } else {
-                        holdingObject.textContent = '❌ No';
+                        holdingObject.textContent = 'No';
                         holdingObject.classList.add('text-green-400');
                         holdingObject.classList.remove('text-red-400');
                     }
@@ -540,75 +558,71 @@
                     // Update behavior flags
                     document.getElementById('behavior-flags').textContent = data.behavior_flags || 0;
                     
-                    // Update emotion
-                    const emotionElement = document.getElementById('emotion');
-                    const emotionConfElement = document.getElementById('emotion-confidence');
-                    const emotion = data.emotion || 'unknown';
-                    const emotionConf = data.emotion_confidence || 0;
-                    
-                    // Emoji mapping for emotions
-                    const emotionEmojis = {
-                        'happy': '😊',
-                        'sad': '😢',
-                        'angry': '😠',
-                        'fear': '😨',
-                        'surprise': '😲',
-                        'disgust': '🤢',
-                        'neutral': '😐',
-                        'unknown': '❓'
-                    };
-                    
-                    const emotionEmoji = emotionEmojis[emotion] || '❓';
-                    emotionElement.textContent = `${emotionEmoji} ${emotion}`;
-                    emotionConfElement.textContent = `${emotionConf.toFixed(0)}%`;
-                    
-                    // Color based on emotion type
-                    if (['happy'].includes(emotion)) {
-                        emotionElement.classList.remove('text-red-400', 'text-yellow-400', 'text-gray-400');
-                        emotionElement.classList.add('text-green-400');
-                    } else if (['angry', 'fear', 'sad', 'disgust'].includes(emotion)) {
-                        emotionElement.classList.remove('text-green-400', 'text-yellow-400', 'text-gray-400');
-                        emotionElement.classList.add('text-red-400');
-                    } else if (['surprise'].includes(emotion)) {
-                        emotionElement.classList.remove('text-green-400', 'text-red-400', 'text-gray-400');
-                        emotionElement.classList.add('text-yellow-400');
-                    } else {
-                        emotionElement.classList.remove('text-green-400', 'text-red-400', 'text-yellow-400');
-                        emotionElement.classList.add('text-gray-400');
-                    }
-                    
                     // Update overlay status
                     const overlay = document.getElementById('overlay-status');
-                    const statusIcon = document.getElementById('status-icon');
+                    const statusDot = document.getElementById('status-dot');
                     const statusText = document.getElementById('status-text');
+                    const directionOverlay = document.getElementById('direction-overlay');
                     
-                    overlay.classList.remove('looking-good', 'looking-away', 'no-face');
+                    overlay.classList.remove('glow-success', 'glow-danger', 'glow-warning');
+                    statusDot.classList.remove('active', 'warning', 'danger');
                     
                     if (data.status === 'no_face') {
-                        overlay.classList.add('no-face');
-                        statusIcon.textContent = '⚠️';
+                        overlay.classList.add('glow-warning');
+                        statusDot.classList.add('warning');
                         statusText.textContent = 'No Face Detected';
+                        if (directionOverlay) directionOverlay.textContent = '-';
                     } else if (data.is_looking_away) {
-                        overlay.classList.add('looking-away');
-                        statusIcon.textContent = '❌';
-                        statusText.textContent = 'Looking Away!';
+                        overlay.classList.add('glow-danger');
+                        statusDot.classList.add('danger');
+                        statusText.textContent = 'Looking Away';
+                        if (directionOverlay) {
+                            directionOverlay.textContent = data.direction || 'Away';
+                            directionOverlay.classList.remove('text-green-400');
+                            directionOverlay.classList.add('text-red-400');
+                        }
                     } else {
-                        overlay.classList.add('looking-good');
-                        statusIcon.textContent = '✅';
-                        statusText.textContent = 'Looking at Screen';
+                        overlay.classList.add('glow-success');
+                        statusDot.classList.add('active');
+                        statusText.textContent = 'Focused';
+                        if (directionOverlay) {
+                            directionOverlay.textContent = 'Center';
+                            directionOverlay.classList.remove('text-red-400');
+                            directionOverlay.classList.add('text-green-400');
+                        }
+                    }
+                    
+                    // Update flags badge visibility
+                    const flagsBadge = document.getElementById('flags-badge');
+                    const flagsCountOverlay = document.getElementById('flags-count-overlay');
+                    if (flagsBadge && data.total_flags > 0) {
+                        flagsBadge.classList.remove('hidden');
+                        if (flagsCountOverlay) flagsCountOverlay.textContent = data.total_flags;
                     }
                     
                     // Update flag list if new flags
                     if (data.total_flags > lastFlagCount) {
                         updateFlagList(data.flags);
+                        // Play alert sound
+                        try {
+                            document.getElementById('alert-sound').play();
+                        } catch (e) {}
                         lastFlagCount = data.total_flags;
                     }
                     
                     // Update calibration info
                     const pitchOffset = data.pitch_offset || 0;
                     document.getElementById('pitch-offset').textContent = pitchOffset.toFixed(1) + '°';
-                    document.getElementById('calibration-status').textContent = 
-                        data.calibrated ? '✅ Calibré' : '⏳ En cours...';
+                    const calStatus = document.getElementById('calibration-status');
+                    if (data.calibrated) {
+                        calStatus.textContent = 'Calibrated';
+                        calStatus.classList.remove('text-yellow-400');
+                        calStatus.classList.add('text-green-400');
+                    } else {
+                        calStatus.textContent = 'Calibrating...';
+                        calStatus.classList.remove('text-green-400');
+                        calStatus.classList.add('text-yellow-400');
+                    }
                 })
                 .catch(err => console.error('Error fetching status:', err));
         }
@@ -617,20 +631,14 @@
             const flagList = document.getElementById('flag-list');
             
             if (flags.length === 0) {
-                flagList.innerHTML = '<p class="text-gray-500 text-sm">No flags yet. Keep looking at the screen!</p>';
+                flagList.innerHTML = '<p class="text-gray-600 text-xs text-center py-2">No flags</p>';
                 return;
             }
             
-            flagList.innerHTML = flags.slice().reverse().map((flag, index) => `
-                <div class="flag-item flex items-center justify-between bg-red-500/20 rounded-lg p-3 border border-red-500/30">
-                    <div>
-                        <span class="text-red-400 font-medium">🚩 Flag #${flags.length - index}</span>
-                        <p class="text-sm text-gray-400">${flag.reason}</p>
-                    </div>
-                    <div class="text-right">
-                        <span class="text-sm text-gray-300">${flag.time}</span>
-                        <p class="text-xs text-gray-500">${flag.duration}</p>
-                    </div>
+            flagList.innerHTML = flags.slice().reverse().slice(0, 8).map((flag, index) => `
+                <div class="animate-slideIn flex items-center gap-2 p-1.5 rounded bg-red-500/10 border border-red-500/20">
+                    <span class="text-xs text-red-400 font-medium">#${flags.length - index}</span>
+                    <span class="text-xs text-gray-400 truncate flex-1">${flag.reason}</span>
                 </div>
             `).join('');
         }
@@ -642,8 +650,9 @@
                     if (data.success) {
                         lastFlagCount = 0;
                         document.getElementById('total-flags').textContent = '0';
-                        document.getElementById('flag-list').innerHTML = 
-                            '<p class="text-gray-500 text-sm">No flags yet. Keep looking at the screen!</p>';
+                        document.getElementById('flag-list').innerHTML = '<p class="text-gray-600 text-xs text-center py-2">No flags</p>';
+                        const flagsBadge = document.getElementById('flags-badge');
+                        if (flagsBadge) flagsBadge.classList.add('hidden');
                     }
                 });
         }
@@ -653,7 +662,9 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        document.getElementById('calibration-status').textContent = '⏳ En cours...';
+                        document.getElementById('calibration-status').textContent = 'Calibrating';
+                        document.getElementById('calibration-status').classList.remove('text-green-400');
+                        document.getElementById('calibration-status').classList.add('text-yellow-400');
                         document.getElementById('pitch-offset').textContent = '0.0°';
                     }
                 });
