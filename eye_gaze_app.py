@@ -72,52 +72,61 @@ def init_models():
     """Initialize MediaPipe face landmarker, hand landmarker, and YOLO."""
     global face_landmarker, hand_landmarker, yolo_model
     
-    # Suppress MediaPipe warnings
+    # Suppress MediaPipe warnings and stderr during initialization
     import warnings
+    import sys
     warnings.filterwarnings('ignore')
     
-    # Initialize MediaPipe Face Landmarker
-    print("Loading MediaPipe Face Landmarker...")
-    try:
-        base_options = python.BaseOptions(model_asset_path='face_landmarker.task')
-        options = vision.FaceLandmarkerOptions(
-            base_options=base_options,
-            output_face_blendshapes=False,
-            output_facial_transformation_matrixes=False,
-            num_faces=1
-        )
-        face_landmarker = vision.FaceLandmarker.create_from_options(options)
-        # Small delay to let it fully initialize
-        time.sleep(0.1)
-        print("✅ MediaPipe Face Landmarker loaded successfully!")
-    except Exception as e:
-        print(f"❌ Error loading Face Landmarker: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    # Temporarily redirect stderr to suppress MediaPipe cleanup errors
+    class SuppressStderr:
+        def __enter__(self):
+            self._original_stderr = sys.stderr
+            sys.stderr = open(os.devnull, 'w')
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            sys.stderr.close()
+            sys.stderr = self._original_stderr
     
-    try:
+    with SuppressStderr():
+        # Initialize MediaPipe Face Landmarker
+        print("Loading MediaPipe Face Landmarker...")
+        try:
+            base_options = python.BaseOptions(model_asset_path='face_landmarker.task')
+            options = vision.FaceLandmarkerOptions(
+                base_options=base_options,
+                output_face_blendshapes=False,
+                output_facial_transformation_matrixes=False,
+                num_faces=1
+            )
+            face_landmarker = vision.FaceLandmarker.create_from_options(options)
+            time.sleep(0.2)
+            print("✅ MediaPipe Face Landmarker loaded successfully!")
+        except Exception as e:
+            print(f"❌ Error loading Face Landmarker: {e}")
+            return False
+        
         # Initialize MediaPipe Hand Landmarker
         print("Loading MediaPipe Hand Landmarker...")
-        hand_base_options = python.BaseOptions(model_asset_path='hand_landmarker.task')
-        hand_options = vision.HandLandmarkerOptions(
-            base_options=hand_base_options,
-            num_hands=2,
-            min_hand_detection_confidence=0.5,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        hand_landmarker = vision.HandLandmarker.create_from_options(hand_options)
-        time.sleep(0.1)
-        print("✅ MediaPipe Hand Landmarker loaded")
-    except Exception as e:
-        print(f"⚠️ Warning: Hand Landmarker failed to load: {e}")
-        print("⚠️ Continuing without hand detection...")
-        hand_landmarker = None
+        try:
+            hand_base_options = python.BaseOptions(model_asset_path='hand_landmarker.task')
+            hand_options = vision.HandLandmarkerOptions(
+                base_options=hand_base_options,
+                num_hands=2,
+                min_hand_detection_confidence=0.5,
+                min_hand_presence_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            hand_landmarker = vision.HandLandmarker.create_from_options(hand_options)
+            time.sleep(0.2)
+            print("✅ MediaPipe Hand Landmarker loaded")
+        except Exception as e:
+            print(f"⚠️ Warning: Hand Landmarker failed to load: {e}")
+            print("⚠️ Continuing without hand detection...")
+            hand_landmarker = None
     
+    # Load YOLO model for phone detection (outside stderr suppression)
+    print("Loading YOLO model for phone detection...")
     try:
-        # Load YOLO model for phone detection
-        print("Loading YOLO model for phone detection...")
         yolo_model = YOLO('yolov8n.pt')
         print("✅ YOLO model loaded")
     except Exception as e:
@@ -302,8 +311,11 @@ def detect_suspicious_behaviors(hand_details, face_landmarks, frame_shape):
         if not hand_info:
             continue
         
-        hand_x, hand_y = hand_info['position']
-        gesture = hand_info['gesture']
+        position = hand_info.get('position')
+        if not position:
+            continue
+        hand_x, hand_y = position
+        gesture = hand_info.get('gesture', 'unknown')
         
         # Behavior 1: Chin holding/resting
         # Hand near chin area with partial closure
@@ -558,6 +570,8 @@ def generate_frames():
         return
     
     frame_count = 0
+    phone_detected = False
+    phone_box = None
     
     while True:
         success, frame = camera.read()
@@ -615,23 +629,27 @@ def generate_frames():
             gaze_state['hands_detected'] = num_hands
             gaze_state['hand_holding_object'] = holding_object
             gaze_state['hand_landmarks'] = hand_landmarks_list
-            gaze_state['left_hand_visible'] = hand_details['left_hand'] is not None
-            gaze_state['right_hand_visible'] = hand_details['right_hand'] is not None
+            gaze_state['left_hand_visible'] = hand_details.get('left_hand') is not None
+            gaze_state['right_hand_visible'] = hand_details.get('right_hand') is not None
             
             # Update finger states
-            if hand_details['left_hand']:
-                gaze_state['fingers_extended']['left'] = hand_details['left_hand']['fingers_extended']
+            left_hand = hand_details.get('left_hand')
+            right_hand = hand_details.get('right_hand')
+            
+            if left_hand and 'fingers_extended' in left_hand:
+                gaze_state['fingers_extended']['left'] = left_hand['fingers_extended']
             else:
                 gaze_state['fingers_extended']['left'] = []
                 
-            if hand_details['right_hand']:
-                gaze_state['fingers_extended']['right'] = hand_details['right_hand']['fingers_extended']
+            if right_hand and 'fingers_extended' in right_hand:
+                gaze_state['fingers_extended']['right'] = right_hand['fingers_extended']
             else:
                 gaze_state['fingers_extended']['right'] = []
             
             # Update gesture
-            if hand_details['gestures']:
-                gaze_state['hand_gesture'] = ', '.join(hand_details['gestures'])
+            gestures = hand_details.get('gestures', [])
+            if gestures:
+                gaze_state['hand_gesture'] = ', '.join(gestures)
             else:
                 gaze_state['hand_gesture'] = 'none'
             
@@ -640,11 +658,13 @@ def generate_frames():
             if 'detection_result' in locals() and detection_result.face_landmarks:
                 face_landmarks_for_behavior = detection_result.face_landmarks[0]
             
-            suspicious_behaviors = detect_suspicious_behaviors(
-                hand_details,
-                face_landmarks_for_behavior,
-                frame.shape
-            )
+            suspicious_behaviors = []
+            if hand_details and face_landmarks_for_behavior:
+                suspicious_behaviors = detect_suspicious_behaviors(
+                    hand_details,
+                    face_landmarks_for_behavior,
+                    frame.shape
+                )
             gaze_state['suspicious_behaviors'] = suspicious_behaviors
             
             # Flag suspicious behaviors
@@ -699,21 +719,23 @@ def generate_frames():
             
             # Display hand information on frame
             y_offset = 30
-            if hand_details['left_hand']:
-                left_info = hand_details['left_hand']
-                fingers = left_info['fingers_extended']
+            left_info = hand_details.get('left_hand')
+            if left_info:
+                fingers = left_info.get('fingers_extended', [])
                 finger_names = ['👍', '☝️', '🖕', '💍', '🤙']
                 extended_fingers = [finger_names[i] for i, ext in enumerate(fingers) if ext]
-                cv2.putText(frame, f"LEFT: {left_info['gesture']} {' '.join(extended_fingers)}", 
+                gesture = left_info.get('gesture', 'unknown')
+                cv2.putText(frame, f"LEFT: {gesture} {' '.join(extended_fingers)}", 
                            (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 y_offset += 25
             
-            if hand_details['right_hand']:
-                right_info = hand_details['right_hand']
-                fingers = right_info['fingers_extended']
+            right_info = hand_details.get('right_hand')
+            if right_info:
+                fingers = right_info.get('fingers_extended', [])
                 finger_names = ['👍', '☝️', '🖕', '💍', '🤙']
                 extended_fingers = [finger_names[i] for i, ext in enumerate(fingers) if ext]
-                cv2.putText(frame, f"RIGHT: {right_info['gesture']} {' '.join(extended_fingers)}", 
+                gesture = right_info.get('gesture', 'unknown')
+                cv2.putText(frame, f"RIGHT: {gesture} {' '.join(extended_fingers)}", 
                            (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 y_offset += 25
             
