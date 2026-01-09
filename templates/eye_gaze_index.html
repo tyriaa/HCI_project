@@ -291,6 +291,16 @@
                             <p class="text-xs text-gray-500">Behavior</p>
                         </div>
                     </div>
+                    <div class="grid grid-cols-2 gap-2 mt-2">
+                        <div class="text-center p-2 rounded bg-pink-500/10 border border-pink-500/20">
+                            <p id="multiple-people-flags" class="text-lg font-bold text-pink-400">0</p>
+                            <p class="text-xs text-gray-500">Multi-People</p>
+                        </div>
+                        <div class="text-center p-2 rounded bg-cyan-500/10 border border-cyan-500/20">
+                            <p id="people-count" class="text-lg font-bold text-cyan-400">0</p>
+                            <p class="text-xs text-gray-500">People Now</p>
+                        </div>
+                    </div>
                     <div class="mt-2 p-2 rounded bg-white/5">
                         <span class="text-xs text-gray-500">Suspicious: </span>
                         <span id="suspicious-behaviors" class="text-xs text-yellow-400">None</span>
@@ -591,6 +601,21 @@
                     
                     // Update behavior flags
                     document.getElementById('behavior-flags').textContent = data.behavior_flags || 0;
+                    
+                    // Update multiple people detection
+                    document.getElementById('multiple-people-flags').textContent = data.multiple_people_flags || 0;
+                    const peopleCount = data.people_count || 0;
+                    const peopleCountElement = document.getElementById('people-count');
+                    peopleCountElement.textContent = peopleCount;
+                    
+                    // Change color based on people count
+                    if (peopleCount > 1) {
+                        peopleCountElement.classList.remove('text-cyan-400');
+                        peopleCountElement.classList.add('text-red-400');
+                    } else {
+                        peopleCountElement.classList.remove('text-red-400');
+                        peopleCountElement.classList.add('text-cyan-400');
+                    }
                     
                     // Update overlay status
                     const overlay = document.getElementById('overlay-status');

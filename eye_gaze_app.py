@@ -73,7 +73,11 @@ gaze_state = {
     'signal_agreement': True,
     'attention_confidence': 'high',
     'face_away_duration': 0,
-    'iris_away_duration': 0
+    'iris_away_duration': 0,
+    # Multiple people detection
+    'people_count': 0,
+    'multiple_people_detected': False,
+    'multiple_people_flags': 0
 }
 
 def reset_all_counters():
@@ -159,7 +163,7 @@ def init_models():
                 base_options=base_options,
                 output_face_blendshapes=False,
                 output_facial_transformation_matrixes=False,
-                num_faces=1
+                num_faces=5  # Detect up to 5 faces to catch multiple people
             )
             face_landmarker = vision.FaceLandmarker.create_from_options(options)
             time.sleep(0.2)
@@ -1784,6 +1788,34 @@ def generate_frames():
         # Process face with MediaPipe tasks API
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         detection_result = face_landmarker.detect(mp_image)
+        
+        # Count number of people detected
+        num_faces = len(detection_result.face_landmarks) if detection_result.face_landmarks else 0
+        gaze_state['people_count'] = num_faces
+        
+        # Check for multiple people and flag if detected
+        if num_faces > 1:
+            gaze_state['multiple_people_detected'] = True
+            
+            # Add flag if not recently flagged
+            if current_time - last_flag_time >= FLAG_COOLDOWN:
+                flag_message = f"⚠️ Multiple people detected ({num_faces} people)"
+                gaze_state['flags'].append({
+                    'time': time.strftime('%H:%M:%S'),
+                    'reason': flag_message,
+                    'type': 'multiple_people'
+                })
+                gaze_state['total_flags'] += 1
+                gaze_state['multiple_people_flags'] += 1
+                last_flag_time = current_time
+                print(flag_message)
+            
+            # Draw warning on frame
+            cv2.putText(frame, f"WARNING: {num_faces} PEOPLE DETECTED", 
+                       (50, frame.shape[0] - 100),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        else:
+            gaze_state['multiple_people_detected'] = False
         
         if not detection_result.face_landmarks:
             # No face detected
