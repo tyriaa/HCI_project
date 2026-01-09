@@ -166,7 +166,6 @@ def init_models():
                 num_faces=5  # Detect up to 5 faces to catch multiple people
             )
             face_landmarker = vision.FaceLandmarker.create_from_options(options)
-            time.sleep(0.2)
             print("✅ MediaPipe Face Landmarker loaded successfully!")
         except Exception as e:
             print(f"❌ Error loading Face Landmarker: {e}")
@@ -184,7 +183,6 @@ def init_models():
                 min_tracking_confidence=0.5
             )
             hand_landmarker = vision.HandLandmarker.create_from_options(hand_options)
-            time.sleep(0.2)
             print("✅ MediaPipe Hand Landmarker loaded")
         except Exception as e:
             print(f"⚠️ Warning: Hand Landmarker failed to load: {e}")
@@ -520,6 +518,7 @@ EYE_AR_THRESH = 0.2  # Eye aspect ratio threshold for blink
 EYE_AR_CONSEC_FRAMES = 2  # Consecutive frames for blink confirmation
 BLINK_COUNTER = 0
 TOTAL_BLINKS = 0
+was_blinking = False  # Track previous blink state to count only once per blink
 
 
 def calculate_eye_aspect_ratio(landmarks, eye_indices, img_shape):
@@ -1530,7 +1529,7 @@ def detect_emotion(frame):
 
 def generate_frames():
     """Generate video frames with gaze detection overlay."""
-    global gaze_state, looking_away_start, last_flag_time, calibration_samples, last_phone_flag_time, last_emotion_time
+    global gaze_state, looking_away_start, last_flag_time, calibration_samples, last_phone_flag_time, last_emotion_time, was_blinking
     
     if face_landmarker is None:
         if not init_models():
@@ -1655,15 +1654,16 @@ def generate_frames():
             )
             
             # Update global state with detailed hand information
+            # NOTE: Swap left/right because video is mirrored (user's left hand appears on right side)
             gaze_state['hands_detected'] = num_hands
             gaze_state['hand_holding_object'] = holding_object
             gaze_state['hand_landmarks'] = hand_landmarks_list
-            gaze_state['left_hand_visible'] = hand_details.get('left_hand') is not None
-            gaze_state['right_hand_visible'] = hand_details.get('right_hand') is not None
+            gaze_state['left_hand_visible'] = hand_details.get('right_hand') is not None  # Swapped
+            gaze_state['right_hand_visible'] = hand_details.get('left_hand') is not None  # Swapped
             
-            # Update finger states
-            left_hand = hand_details.get('left_hand')
-            right_hand = hand_details.get('right_hand')
+            # Update finger states (swapped for mirrored video)
+            left_hand = hand_details.get('right_hand')  # User's left = camera's right
+            right_hand = hand_details.get('left_hand')  # User's right = camera's left
             
             if left_hand and 'fingers_extended' in left_hand:
                 gaze_state['fingers_extended']['left'] = left_hand['fingers_extended']
@@ -1849,9 +1849,10 @@ def generate_frames():
             gaze_state['eye_openness_avg'] = avg_openness
             gaze_state['is_blinking'] = is_blinking
             
-            # Track blinks
-            if is_blinking:
+            # Track blinks - only count once per blink (on transition from not blinking to blinking)
+            if is_blinking and not was_blinking:
                 gaze_state['blink_count'] += 1
+            was_blinking = is_blinking
             
             # Store gaze data in state
             gaze_state['iris_position'] = {
@@ -1962,7 +1963,7 @@ def generate_frames():
                 face_d = gaze_state.get('face_direction', 'center').upper()
                 iris_d = gaze_state.get('iris_direction', 'center').upper()
                 conf = gaze_state.get('attention_confidence', 'high')
-                agree = "✓" if gaze_state.get('signal_agreement', True) else "✗"
+                agree = "Y" if gaze_state.get('signal_agreement', True) else "N"
                 cv2.putText(frame, f"Face: {face_d} | Iris: {iris_d} | Agree: {agree} | Conf: {conf}", (50, 120),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
@@ -2071,9 +2072,15 @@ def status():
 
 @app.route('/reset_flags')
 def reset_flags():
-    """Reset flag counter."""
+    """Reset all flag counters."""
     gaze_state['flags'] = []
     gaze_state['total_flags'] = 0
+    gaze_state['phone_flags'] = 0
+    gaze_state['hand_flags'] = 0
+    gaze_state['behavior_flags'] = 0
+    gaze_state['tab_switch_flags'] = 0
+    gaze_state['tab_switches'] = 0
+    gaze_state['window_blurs'] = 0
     return jsonify({'success': True})
 
 
@@ -2177,6 +2184,21 @@ def window_resize():
     print(f"⚠️ Window resized at {timestamp}: {old_size.get('width')}x{old_size.get('height')} → {new_size.get('width')}x{new_size.get('height')}")
     
     return jsonify({'success': True})
+
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    """Shutdown the Flask server."""
+    import os
+    import signal
+    print("\n🛑 Shutdown requested from UI")
+    # Use os._exit to force exit the process
+    def shutdown_server():
+        os._exit(0)
+    # Schedule shutdown after response is sent
+    import threading
+    threading.Timer(0.5, shutdown_server).start()
+    return jsonify({'success': True, 'message': 'Server shutting down...'})
 
 
 if __name__ == '__main__':
